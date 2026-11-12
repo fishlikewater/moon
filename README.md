@@ -111,7 +111,7 @@ cargo test --manifest-path server-rs/Cargo.toml --test api_agents_rooms
 2. 提交并推送：`git commit -am "chore: release v0.2.0" && git push`。
 3. 打 tag 并推送：`git tag v0.2.0 && git push origin v0.2.0`。
 
-`release.yml` 会校验 tag 与两处版本一致，构建 Windows 安装包并生成 `SHA256.txt`，然后创建同名 GitHub Release；`ci.yml` 在每次 push 到 `main` 与 PR 时运行测试、前端构建与桌面打包。
+`release.yml` 会校验 tag 与两处版本一致，构建 Windows 安装包并生成 `SHA256.txt`（均在 `desktop/src-tauri/target/release/bundle/nsis/`），然后创建同名 GitHub Release；`ci.yml` 在每次 push 到 `main` 与 PR 时运行测试、前端构建与桌面打包。
 
 ## 目录结构
 

@@ -41,10 +41,12 @@ jobs:
 
       - name: Verify tag matches versions
         shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $tauriVersion = (Get-Content desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $tag = $env:TAG
+          $packageVersion = (Get-Content package.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content desktop/src-tauri/tauri.conf.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
           if ($tag -ne "v$packageVersion") {
             throw "标签 $tag 与 package.json 版本 v$packageVersion 不一致"
           }
@@ -75,8 +77,17 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = $env:TAG
           $bundle = "desktop/src-tauri/target/release/bundle/nsis"
           $installer = Get-ChildItem -Path "$bundle/*.exe" | Select-Object -First 1
-          gh release create $tag --title $tag --generate-notes $installer.FullName "$bundle/SHA256.txt"
+          if (-not $installer) {
+            throw "未找到 NSIS 安装包：$bundle"
+          }
+          gh release view $tag --json tagName *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $installer.FullName "$bundle/SHA256.txt" --clobber
+          } else {
+            gh release create "$tag" --title "$tag" --generate-notes $installer.FullName "$bundle/SHA256.txt"
+          }
