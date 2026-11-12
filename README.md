@@ -4,6 +4,7 @@ Moon 是一个**本地优先的多智能体协作工作台**：创建智能体�
 
 桌面端基于 **Tauri 2 + Rust**，前后端同进程运行，数据只保存在本机；同时提供浏览器开发模式。
 
+[![CI](https://github.com/fishlikewater/moon/actions/workflows/ci.yml/badge.svg)](https://github.com/fishlikewater/moon/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ## 核心能力
@@ -103,6 +104,14 @@ npm run build   # 构建 shared + web
 npm test -w @moon/web -- messageView
 cargo test --manifest-path server-rs/Cargo.toml --test api_agents_rooms
 ```
+
+## 发布
+
+1. 同步 `package.json` 与 `desktop/src-tauri/tauri.conf.json` 的 `version`。
+2. 提交并推送：`git commit -am "chore: release v0.2.0" && git push`。
+3. 打 tag 并推送：`git tag v0.2.0 && git push origin v0.2.0`。
+
+`release.yml` 会校验 tag 与两处版本一致，构建 Windows 安装包并生成 `SHA256.txt`，然后创建同名 GitHub Release；`ci.yml` 在每次 push 到 `main` 与 PR 时运行测试、前端构建与桌面打包。
 
 ## 目录结构
 
