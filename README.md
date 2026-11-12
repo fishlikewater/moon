@@ -69,7 +69,7 @@ npm run desktop:build   # 产出 Windows 安装包
 
 安装包输出到 `desktop/src-tauri/target/release/bundle/nsis/`。桌面端数据位于系统用户数据目录（Windows 为 `%LOCALAPPDATA%\com.moon.workbench`）。
 
-> harness 需要本机已安装并登录对应 CLI（如 `zcode`、`codex`）或配置好 API Key；Moon 不内置模型额度。没有额度时可设置 `MOON_FAKE_HARNESS=1`，用 `fake` harness 验证完整交互。
+> harness 需要本机已安装并登录对应 CLI（如 `zcode`、`codex`）或配置好 API Key；Moon 不内置模型额度。桌面端可用 `MOON_FAKE_HARNESS=1` 启动，用内置 fake 适配器跑通完整交互（Web 开发模式不支持该变量）。
 
 ## 配置
 
@@ -84,7 +84,7 @@ npm run desktop:build   # 产出 Windows 安装包
 | `MOON_STORAGE_ROOT` | `data/harness-sessions` | harness 会话存储 |
 | `MOON_RUN_TIMEOUT_SECS` | `1800` | 单次运行上限；`0` 不限制（设置页保存后以设置为准） |
 | `MOON_ZCODE_TRANSPORT` | `app-server` | zcode 传输；设为 `cli` 回退 CLI（不支持附加目录） |
-| `MOON_FAKE_HARNESS` | 未设置 | 设为 `1` 启用 fake harness 调试 |
+| `MOON_FAKE_HARNESS` | 未设置 | 仅桌面端：设为 `1` 时用内置 fake 适配器接管 fake 智能体 |
 | `MOON_ACP_REGISTRY_URL` | 官方目录 | 覆盖 ACP 注册表 CDN 地址 |
 
 设置页（`/settings`）还可调整默认权限模式、讨论轮数、上下文预算与压缩、附件大小/数量以及运行超时。
