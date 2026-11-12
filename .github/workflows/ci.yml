@@ -46,6 +46,15 @@ jobs:
       - name: Test web
         run: npm test -w @moon/web
 
+      # zcode 适配器测试需要一份 provider 配置；CI 用最小桩文件，
+      # 避免测试依赖 runner 上并不存在的本机 zcode 配置。
+      - name: Provide ZCode provider config stub
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP "zcode-provider-config.json"
+          [System.IO.File]::WriteAllText($path, '{"config":{}}', [System.Text.UTF8Encoding]::new($false))
+          "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE=$path" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Test Rust backend
         run: npm run test:rust
 
