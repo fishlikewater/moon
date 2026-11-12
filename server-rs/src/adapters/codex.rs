@@ -35,35 +35,44 @@ pub struct ResolvedCodexCommand {
     pub env: Vec<(String, String)>,
 }
 
-/// 解析 codex 可执行文件：显式配置 → 环境变量 → Windows 默认安装 → PATH。
-pub fn resolve_codex_command(configured_bin: Option<&str>) -> ResolvedCodexCommand {
+/// 安装目录下的候选文件名（App Paths 给出的目录内按序尝试）。
+const CODEX_RELATIVE_PATHS: &[&str] = &["codex.exe"];
+/// PATH 上的 codex CLI 命令名。
+const CODEX_PATH_NAMES: &[&str] = &["codex"];
+
+/// 定位 codex：显式配置 → App Paths → PATH → 厂商默认安装位置。
+pub fn locate_codex_program(configured_bin: Option<&str>) -> super::locate::LocatedProgram {
     let explicit = normalize_bin(configured_bin)
         .or_else(|| normalize_bin(std::env::var("MOON_CODEX_BIN").ok().as_deref()));
-    if let Some(bin) = explicit {
-        return command_for(&bin);
-    }
-    if let Some(local_app_data) = std::env::var("LOCALAPPDATA")
+    let vendor_defaults: Vec<PathBuf> = vendor_default_codex_bin().into_iter().collect();
+    super::locate::locate_program(&super::locate::LocateRequest {
+        explicit: explicit.as_deref(),
+        protocol: None,
+        uninstall_prefix: None,
+        app_paths_exe: Some("codex.exe"),
+        directory_candidates: CODEX_RELATIVE_PATHS,
+        path_names: CODEX_PATH_NAMES,
+        vendor_defaults: &vendor_defaults,
+    })
+}
+
+/// 厂商固定布局：`%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe`；仅作为最后兜底。
+fn vendor_default_codex_bin() -> Option<PathBuf> {
+    let local_app_data = std::env::var("LOCALAPPDATA")
         .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        let candidate = Path::new(&local_app_data)
+        .filter(|value| !value.trim().is_empty())?;
+    Some(
+        Path::new(&local_app_data)
             .join("OpenAI")
             .join("Codex")
             .join("bin")
-            .join("codex.exe");
-        if candidate.is_file() {
-            return ResolvedCodexCommand {
-                command: candidate.to_string_lossy().into_owned(),
-                args_prefix: Vec::new(),
-                env: Vec::new(),
-            };
-        }
-    }
-    ResolvedCodexCommand {
-        command: "codex".to_string(),
-        args_prefix: Vec::new(),
-        env: Vec::new(),
-    }
+            .join("codex.exe"),
+    )
+}
+
+/// 解析 codex 可执行文件（脚本时自动选择 node 作为 runner）。
+pub fn resolve_codex_command(configured_bin: Option<&str>) -> ResolvedCodexCommand {
+    command_for(&locate_codex_program(configured_bin).program)
 }
 
 fn command_for(bin: &str) -> ResolvedCodexCommand {

@@ -6,6 +6,7 @@ pub mod codex_config;
 pub mod fake;
 pub mod harness_config_error;
 pub mod kimi_config;
+pub mod locate;
 pub mod types;
 pub mod zcode;
 pub mod zcode_app_server;
@@ -57,6 +58,15 @@ pub fn create_adapter(harness: HarnessKind) -> AppResult<Arc<dyn HarnessAdapter>
         HarnessKind::KimiCode => Err(AppError::harness_unsupported(
             "暂不支持的 harness：kimi-code",
         )),
+    }
+}
+
+/// harness 专用的可执行文件覆盖键（写入 modelConfig）；其他 harness 返回 None。
+pub fn bin_config_key(harness: HarnessKind) -> Option<&'static str> {
+    match harness {
+        HarnessKind::Zcode => Some("zcodeBin"),
+        HarnessKind::Codex => Some("codexBin"),
+        _ => None,
     }
 }
 

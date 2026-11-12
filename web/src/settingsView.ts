@@ -1,4 +1,9 @@
-import type { AppSettings, RoomPermissionMode } from "@moon/shared";
+import type {
+  AppSettings,
+  HarnessBinarySource,
+  HarnessBinaryStatus,
+  RoomPermissionMode,
+} from "@moon/shared";
 
 /** 与后端 domain/settings.rs 保持一致的边界值。 */
 export const SETTINGS_LIMITS = {
@@ -8,6 +13,8 @@ export const SETTINGS_LIMITS = {
   attachmentMaxFilesPerMessage: { min: 1, max: 20 },
   /** 0 表示不限制；其余为秒数区间。 */
   runTimeoutSecs: { min: 60, max: 86_400 },
+  /** 与后端 MAX_BIN_PATH_CHARS 保持一致。 */
+  harnessBinPathChars: 1_024,
 } as const;
 
 const PERMISSION_MODES: readonly RoomPermissionMode[] = ["plan", "auto", "full"];
@@ -21,6 +28,8 @@ export interface SettingsDraft {
   attachmentMaxFileBytes: string;
   attachmentMaxFilesPerMessage: string;
   runTimeoutSecs: string;
+  zcodeBinPath: string;
+  codexBinPath: string;
 }
 
 export interface SettingsDraftErrors {
@@ -29,6 +38,8 @@ export interface SettingsDraftErrors {
   attachmentMaxFileBytes?: string;
   attachmentMaxFilesPerMessage?: string;
   runTimeoutSecs?: string;
+  zcodeBinPath?: string;
+  codexBinPath?: string;
 }
 
 export type SettingsParseResult =
@@ -46,6 +57,8 @@ export function settingsToDraft(settings: AppSettings): SettingsDraft {
       settings.attachmentMaxFilesPerMessage,
     ),
     runTimeoutSecs: String(settings.runTimeoutSecs),
+    zcodeBinPath: settings.zcodeBinPath ?? "",
+    codexBinPath: settings.codexBinPath ?? "",
   };
 }
 
@@ -108,6 +121,14 @@ export function parseSettingsDraft(draft: SettingsDraft): SettingsParseResult {
   if (runTimeout.error !== undefined) {
     errors.runTimeoutSecs = runTimeout.error;
   }
+  const zcodePath = parseBinPath(draft.zcodeBinPath, "zcode 路径");
+  if (zcodePath.error !== undefined) {
+    errors.zcodeBinPath = zcodePath.error;
+  }
+  const codexPath = parseBinPath(draft.codexBinPath, "codex 路径");
+  if (codexPath.error !== undefined) {
+    errors.codexBinPath = codexPath.error;
+  }
   if (Object.keys(errors).length > 0) {
     return { ok: false, errors };
   }
@@ -125,8 +146,24 @@ export function parseSettingsDraft(draft: SettingsDraft): SettingsParseResult {
       attachmentMaxFileBytes: maxFile.value!,
       attachmentMaxFilesPerMessage: maxFiles.value!,
       runTimeoutSecs: runTimeout.value!,
+      zcodeBinPath: zcodePath.value!,
+      codexBinPath: codexPath.value!,
     },
   };
+}
+
+/** 覆盖路径允许为空（自动检测），非空时限制长度。 */
+function parseBinPath(
+  raw: string,
+  label: string,
+): { value?: string; error?: string } {
+  const trimmed = raw.trim();
+  if (Array.from(trimmed).length > SETTINGS_LIMITS.harnessBinPathChars) {
+    return {
+      error: `${label}不能超过 ${SETTINGS_LIMITS.harnessBinPathChars} 个字符`,
+    };
+  }
+  return { value: trimmed };
 }
 
 /** `0` 表示不限制；其余必须在秒数区间内。 */
@@ -167,4 +204,37 @@ export function formatBytes(bytes: number): string {
   }
   const digits = unit === 0 ? 0 : value >= 10 ? 0 : 1;
   return `${value.toFixed(digits)} ${units[unit]}`;
+}
+
+const BINARY_SOURCE_LABELS: Record<HarnessBinarySource, string> = {
+  configured: "手动指定",
+  protocol: "URL 协议处理器",
+  uninstall: "卸载注册表",
+  app_paths: "App Paths",
+  path: "PATH",
+  vendor_default: "厂商默认位置",
+  fallback: "自动检测失败",
+};
+
+/** 来源标识的中文标签；未知来源原样返回，便于排查后端新增值。 */
+export function binarySourceLabel(source: string): string {
+  return (
+    BINARY_SOURCE_LABELS[source as HarnessBinarySource] ?? source
+  );
+}
+
+export type BinaryStatusTone = "ok" | "warn";
+
+/** 解析结果的人类可读状态；失败时界面同时展示已尝试来源。 */
+export function binaryStatus(status: HarnessBinaryStatus): {
+  label: string;
+  tone: BinaryStatusTone;
+} {
+  if (status.exists) {
+    return { label: "可用", tone: "ok" };
+  }
+  if (status.source === "fallback" || status.path.trim() === "") {
+    return { label: "未检测到", tone: "warn" };
+  }
+  return { label: "路径不存在", tone: "warn" };
 }

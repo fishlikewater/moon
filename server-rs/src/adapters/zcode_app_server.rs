@@ -26,6 +26,8 @@ use super::zcode_config::ZcodeModelSelection;
 pub(crate) struct AppServerLaunch {
     pub program: String,
     pub args_prefix: Vec<String>,
+    /// 定位时尝试过的来源；启动失败时拼入错误。
+    pub searched: Vec<String>,
     pub env: Vec<(String, String)>,
     pub workspace_dir: String,
     pub additional_directories: Vec<String>,
@@ -67,7 +69,11 @@ pub(crate) async fn run(
     }
 
     let mut child = command.spawn().map_err(|error| {
-        AppError::harness_run_failed(format!("无法启动 zcode app-server：{error}"))
+        let mut message = format!("无法启动 zcode app-server（程序 {}）：{error}", launch.program);
+        if !launch.searched.is_empty() {
+            message.push_str(&format!("（已尝试：{}）", launch.searched.join("、")));
+        }
+        AppError::harness_run_failed(message)
     })?;
     let mut stdin = child
         .stdin

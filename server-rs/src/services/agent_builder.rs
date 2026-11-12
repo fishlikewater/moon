@@ -169,6 +169,11 @@ impl AgentBuilderService {
             .and_then(|value| value.get("model"))
             .and_then(Value::as_str)
             .map(str::to_string);
+        // 用户覆盖的执行文件同样作用于助手运行，避免自动检测失败。
+        let config = self
+            .settings
+            .with_harness_bin_override(agent.harness, config)
+            .await?;
         let mut stream = adapter.run(RunInput {
             prompt,
             workspace_dir: self.workspace_dir.to_string_lossy().into_owned(),

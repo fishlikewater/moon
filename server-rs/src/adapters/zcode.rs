@@ -30,9 +30,10 @@ use super::{
     describe_spawn_failure, tail, unique_temp_dir, unique_temp_dir_in, Cleanup,
 };
 
-const WINDOWS_INSTALL_RELATIVE_PATH: &str = "ZCode/resources/glm/zcode.cjs";
-/// 本机实测安装位置；`%ProgramFiles%` 指向 C: 盘时的兜底。
-const MEASURED_WINDOWS_INSTALL_PATH: &str = r"D:\Program Files\ZCode\resources\glm\zcode.cjs";
+/// 安装目录下的 zcode 脚本；由协议处理器/卸载注册表/App Paths 给出的目录推导。
+const ZCODE_SCRIPT_RELATIVE_PATHS: &[&str] = &["resources/glm/zcode.cjs"];
+/// PATH 上的 zcode CLI 命令名。
+const ZCODE_PATH_NAMES: &[&str] = &["zcode"];
 const SESSION_NOT_FOUND_MARKER: &str = "Session not found";
 
 /// 单个附件的最大字符数，留出 Windows 32,767 命令行上限的余量。
@@ -187,23 +188,33 @@ pub struct ResolvedZcodeCommand {
     pub command: String,
     pub args_prefix: Vec<String>,
     pub env: Vec<(String, String)>,
+    /// 定位时尝试过的来源；启动失败时拼入错误，便于诊断 `program not found`。
+    pub searched: Vec<String>,
 }
 
-/// 解析 zcode 可执行文件：显式配置 → 环境变量 → Windows 默认安装 → PATH。
-pub fn resolve_zcode_command(configured_bin: Option<&str>) -> ResolvedZcodeCommand {
+/// 定位 zcode 脚本或 CLI：显式配置 → 协议处理器 → 卸载注册表 → App Paths → PATH。
+///
+/// 不做目录猜测：安装器写入的注册表元数据优先，最后才回退到 PATH。
+pub fn locate_zcode_program(configured_bin: Option<&str>) -> super::locate::LocatedProgram {
     let explicit = normalize_bin(configured_bin)
         .or_else(|| normalize_bin(std::env::var("MOON_ZCODE_BIN").ok().as_deref()));
-    if let Some(bin) = explicit {
-        return command_for(&bin);
-    }
-    if let Some(installed) = find_windows_install() {
-        return command_for(&installed);
-    }
-    ResolvedZcodeCommand {
-        command: "zcode".to_string(),
-        args_prefix: Vec::new(),
-        env: Vec::new(),
-    }
+    super::locate::locate_program(&super::locate::LocateRequest {
+        explicit: explicit.as_deref(),
+        protocol: Some("zcode"),
+        uninstall_prefix: Some("ZCode"),
+        app_paths_exe: Some("ZCode.exe"),
+        directory_candidates: ZCODE_SCRIPT_RELATIVE_PATHS,
+        path_names: ZCODE_PATH_NAMES,
+        vendor_defaults: &[],
+    })
+}
+
+/// 解析 zcode 可执行文件（脚本时自动选择 node / ZCode.exe 作为 runner）。
+pub fn resolve_zcode_command(configured_bin: Option<&str>) -> ResolvedZcodeCommand {
+    let located = locate_zcode_program(configured_bin);
+    let mut resolved = command_for(&located.program);
+    resolved.searched = located.searched;
+    resolved
 }
 
 fn command_for(bin: &str) -> ResolvedZcodeCommand {
@@ -225,12 +236,14 @@ fn command_for(bin: &str) -> ResolvedZcodeCommand {
             command: runner,
             args_prefix: vec![bin.to_string()],
             env,
+            searched: Vec::new(),
         };
     }
     ResolvedZcodeCommand {
         command: bin.to_string(),
         args_prefix: Vec::new(),
         env: Vec::new(),
+        searched: Vec::new(),
     }
 }
 
@@ -238,25 +251,6 @@ fn derive_zcode_exe(bin: &str) -> Option<String> {
     let root = Path::new(bin).parent()?.parent()?.parent()?;
     let candidate = root.join("ZCode.exe");
     candidate.is_file().then(|| candidate.to_string_lossy().into_owned())
-}
-
-fn find_windows_install() -> Option<String> {
-    if !cfg!(windows) {
-        return None;
-    }
-    for root in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
-        let Some(root) = std::env::var(root).ok().filter(|value| !value.trim().is_empty())
-        else {
-            continue;
-        };
-        let candidate = Path::new(&root).join(WINDOWS_INSTALL_RELATIVE_PATH);
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-    }
-    Path::new(MEASURED_WINDOWS_INSTALL_PATH)
-        .is_file()
-        .then(|| MEASURED_WINDOWS_INSTALL_PATH.to_string())
 }
 
 /// 把房间权限模式映射为 zcode `--mode`；未传时保持 CLI 默认（yolo）。
@@ -517,6 +511,7 @@ async fn run_zcode_app_server(
     let launch = crate::adapters::zcode_app_server::AppServerLaunch {
         program: resolved.command,
         args_prefix: resolved.args_prefix,
+        searched: resolved.searched,
         env,
         workspace_dir: input.workspace_dir.clone(),
         additional_directories: input.additional_directories.clone(),
@@ -601,7 +596,9 @@ async fn run_zcode_cli(
         );
     }
 
-    let mut child = command.spawn().map_err(|error| spawn_error(error, "zcode"))?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| spawn_error(error, "zcode", &resolved.searched))?;
     let stdout = child
         .stdout
         .take()
@@ -714,13 +711,55 @@ fn code_label(code: Option<i32>) -> String {
         .unwrap_or_else(|| "未知".to_string())
 }
 
-fn spawn_error(error: std::io::Error, harness: &str) -> AppError {
-    let message = describe_spawn_failure(&error, harness)
-        .unwrap_or_else(|| format!("{harness} 启动失败：{error}"));
+fn spawn_error(error: std::io::Error, harness: &str, searched: &[String]) -> AppError {
+    let message = spawn_error_message(&error, harness, searched);
     AppError::with_source(ErrorCode::HarnessRunFailed, message, error)
+}
+
+/// 拼出可诊断的启动失败消息；有尝试来源时附在末尾。
+fn spawn_error_message(error: &std::io::Error, harness: &str, searched: &[String]) -> String {
+    let base = describe_spawn_failure(error, harness)
+        .unwrap_or_else(|| format!("{harness} 启动失败：{error}"));
+    if searched.is_empty() {
+        base
+    } else {
+        format!("{base}（已尝试：{}）", searched.join("、"))
+    }
 }
 
 async fn terminate(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
     let _ = child.wait().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spawn_error_message;
+
+    #[test]
+    fn spawn_failure_lists_attempted_sources() {
+        let error = std::io::Error::new(std::io::ErrorKind::NotFound, "program not found");
+        let message = spawn_error_message(
+            &error,
+            "zcode",
+            &[
+                "protocol:zcode".to_string(),
+                "app_paths:ZCode.exe".to_string(),
+                "path:zcode".to_string(),
+            ],
+        );
+        assert!(message.contains("未找到可执行的 zcode"), "{message}");
+        assert!(
+            message.contains("已尝试：protocol:zcode、app_paths:ZCode.exe、path:zcode"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn spawn_failure_without_sources_has_no_suffix() {
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let message = spawn_error_message(&error, "zcode", &[]);
+        assert!(message.contains("没有权限执行 zcode"), "{message}");
+        assert!(!message.contains("已尝试"), "{message}");
+    }
 }

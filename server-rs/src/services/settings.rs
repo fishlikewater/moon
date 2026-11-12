@@ -32,6 +32,40 @@ impl SettingsService {
         Ok(next)
     }
 
+    /// 按 harness 返回用户覆盖的可执行文件路径；空字符串表示自动检测。
+    pub async fn harness_bin_override(
+        &self,
+        harness: crate::domain::agent::HarnessKind,
+    ) -> AppResult<Option<String>> {
+        use crate::domain::agent::HarnessKind;
+
+        let settings = self.store.load().await?;
+        let value = match harness {
+            HarnessKind::Zcode => settings.zcode_bin_path,
+            HarnessKind::Codex => settings.codex_bin_path,
+            _ => return Ok(None),
+        };
+        let trimmed = value.trim();
+        Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
+    }
+
+    /// 把用户覆盖路径合并进模型配置；无覆盖时原样返回，调用方无需分支。
+    pub async fn with_harness_bin_override(
+        &self,
+        harness: crate::domain::agent::HarnessKind,
+        config: Option<crate::domain::agent::ModelConfig>,
+    ) -> AppResult<Option<crate::domain::agent::ModelConfig>> {
+        let Some(key) = crate::adapters::bin_config_key(harness) else {
+            return Ok(config);
+        };
+        let Some(path) = self.harness_bin_override(harness).await? else {
+            return Ok(config);
+        };
+        let mut map = config.unwrap_or_default();
+        map.insert(key.to_string(), Value::String(path));
+        Ok(Some(map))
+    }
+
     /// 运行总时长上限；`0`（不限制）返回 `None`。
     pub async fn run_timeout(&self) -> AppResult<Option<Duration>> {
         let settings = self.store.load().await?;

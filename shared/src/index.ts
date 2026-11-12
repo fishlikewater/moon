@@ -219,6 +219,33 @@ export interface AppSettings {
   attachmentMaxFilesPerMessage: number;
   /** 运行总时长上限（秒）；0 表示不限制。 */
   runTimeoutSecs: number;
+  /** zcode 可执行文件覆盖；空字符串表示自动检测。 */
+  zcodeBinPath: string;
+  /** codex 可执行文件覆盖；空字符串表示自动检测。 */
+  codexBinPath: string;
+}
+
+/** harness 可执行文件的解析来源。 */
+export type HarnessBinarySource =
+  | "configured"
+  | "protocol"
+  | "uninstall"
+  | "app_paths"
+  | "path"
+  | "vendor_default"
+  | "fallback";
+
+export interface HarnessBinaryStatus {
+  path: string;
+  source: HarnessBinarySource;
+  exists: boolean;
+  searched: string[];
+}
+
+/** `GET /api/harnesses/binaries` 响应。 */
+export interface HarnessBinariesResponse {
+  zcode: HarnessBinaryStatus;
+  codex: HarnessBinaryStatus;
 }
 
 /** `GET /api/settings` 响应。 */

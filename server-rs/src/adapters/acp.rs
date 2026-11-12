@@ -42,6 +42,15 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+/// 裸命令（如 `npx`）按注册表 PATH + PATHEXT 解析；带路径分隔符的命令原样使用。
+/// 返回实际程序与来源，供启动失败时诊断。
+fn resolved_program(command: &str) -> (String, &'static str) {
+    match super::locate::resolve_bare_command(command) {
+        Some(resolved) => (resolved, "PATH"),
+        None => (command.to_string(), "原样命令"),
+    }
+}
+
 /// Windows `CREATE_NO_WINDOW`：GUI 进程 spawn 控制台程序时不创建可见窗口。
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -108,7 +117,8 @@ async fn run_with_harness(
     input: RunInput,
     sender: &mpsc::Sender<AppResult<RunEvent>>,
 ) -> AppResult<()> {
-    let mut command = Command::new(&harness.command);
+    let (program, source) = resolved_program(&harness.command);
+    let mut command = Command::new(&program);
     command
         .args(&harness.args)
         .current_dir(&input.workspace_dir)
@@ -123,7 +133,7 @@ async fn run_with_harness(
 
     let mut child = command.spawn().map_err(|error| {
         AppError::harness_run_failed(format!(
-            "无法启动自定义 ACP agent「{}」：{error}",
+            "无法启动自定义 ACP agent「{}」（程序 {program}，来源 {source}）：{error}",
             harness.name
         ))
     })?;
@@ -195,7 +205,8 @@ pub async fn probe_capabilities(
     workspace_dir: &str,
     timeout: Duration,
 ) -> AppResult<AcpCapabilities> {
-    let mut command = Command::new(&harness.command);
+    let (program, source) = resolved_program(&harness.command);
+    let mut command = Command::new(&program);
     command
         .args(&harness.args)
         .current_dir(workspace_dir)
@@ -210,7 +221,7 @@ pub async fn probe_capabilities(
 
     let mut child = command.spawn().map_err(|error| {
         AppError::harness_run_failed(format!(
-            "无法启动自定义 ACP agent「{}」：{error}",
+            "无法启动自定义 ACP agent「{}」（程序 {program}，来源 {source}）：{error}",
             harness.name
         ))
     })?;

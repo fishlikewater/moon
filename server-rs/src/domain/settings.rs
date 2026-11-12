@@ -34,7 +34,7 @@ pub const MAX_ATTACHMENT_MAX_FILES_PER_MESSAGE: i64 = 20;
 pub const MIN_RUN_TIMEOUT_SECS: i64 = 60;
 pub const MAX_RUN_TIMEOUT_SECS: i64 = 86_400;
 
-pub const SETTINGS_KEYS: [&str; 7] = [
+pub const SETTINGS_KEYS: [&str; 9] = [
     "defaultRoomPermissionMode",
     "defaultRoomDiscussionRounds",
     "contextCompressionEnabled",
@@ -42,7 +42,12 @@ pub const SETTINGS_KEYS: [&str; 7] = [
     "attachmentMaxFileBytes",
     "attachmentMaxFilesPerMessage",
     "runTimeoutSecs",
+    "zcodeBinPath",
+    "codexBinPath",
 ];
+
+/// harness 可执行文件覆盖路径的最大长度。
+pub const MAX_BIN_PATH_CHARS: usize = 1024;
 
 /// 应用设置全集；JSON 与前端契约均为 camelCase。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,6 +61,10 @@ pub struct AppSettings {
     pub attachment_max_files_per_message: i64,
     /// 运行总时长上限（秒）；`0` 表示不限制。
     pub run_timeout_secs: i64,
+    /// zcode 可执行文件覆盖；空字符串表示自动检测。
+    pub zcode_bin_path: String,
+    /// codex 可执行文件覆盖；空字符串表示自动检测。
+    pub codex_bin_path: String,
 }
 
 impl Default for AppSettings {
@@ -68,6 +77,8 @@ impl Default for AppSettings {
             attachment_max_file_bytes: DEFAULT_ATTACHMENT_MAX_FILE_BYTES,
             attachment_max_files_per_message: DEFAULT_ATTACHMENT_MAX_FILES_PER_MESSAGE,
             run_timeout_secs: crate::adapters::DEFAULT_RUN_TIMEOUT_SECS as i64,
+            zcode_bin_path: String::new(),
+            codex_bin_path: String::new(),
         }
     }
 }
@@ -102,6 +113,8 @@ impl AppSettings {
                 self.attachment_max_files_per_message.to_string(),
             ),
             ("runTimeoutSecs", self.run_timeout_secs.to_string()),
+            ("zcodeBinPath", self.zcode_bin_path.clone()),
+            ("codexBinPath", self.codex_bin_path.clone()),
         ]
     }
 
@@ -157,6 +170,8 @@ impl AppSettings {
                 })
                 // 环境变量只在设置库尚无该键时作为初始默认，之后以设置为准。
                 .unwrap_or_else(initial_run_timeout_secs),
+            zcode_bin_path: bin_path(pairs, "zcodeBinPath"),
+            codex_bin_path: bin_path(pairs, "codexBinPath"),
         }
     }
 }
@@ -231,12 +246,39 @@ pub fn apply_patch(current: &AppSettings, patch: &Value) -> AppResult<AppSetting
             "runTimeoutSecs" => {
                 next.run_timeout_secs = parse_run_timeout_setting(value)?;
             }
+            "zcodeBinPath" => {
+                next.zcode_bin_path = parse_bin_path(value, key)?;
+            }
+            "codexBinPath" => {
+                next.codex_bin_path = parse_bin_path(value, key)?;
+            }
             other => {
                 return Err(AppError::validation(format!("未知设置项：{other}")));
             }
         }
     }
     Ok(next)
+}
+
+fn parse_bin_path(value: &Value, key: &str) -> AppResult<String> {
+    let text = value
+        .as_str()
+        .ok_or_else(|| AppError::validation(format!("{key} 必须是字符串")))?;
+    let trimmed = text.trim();
+    if trimmed.chars().count() > MAX_BIN_PATH_CHARS {
+        return Err(AppError::validation(format!(
+            "{key} 不能超过 {MAX_BIN_PATH_CHARS} 个字符"
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn bin_path(pairs: &std::collections::HashMap<String, String>, key: &str) -> String {
+    pairs
+        .get(key)
+        .map(|value| value.trim().to_string())
+        .filter(|value| value.chars().count() <= MAX_BIN_PATH_CHARS)
+        .unwrap_or_default()
 }
 
 fn parse_int(value: &Value, key: &str, min: i64, max: i64) -> AppResult<i64> {
@@ -332,11 +374,29 @@ mod tests {
             attachment_max_file_bytes: 2_000_000,
             attachment_max_files_per_message: 4,
             run_timeout_secs: 1_800,
+            zcode_bin_path: r"D:\ZCode\ZCode.exe".to_string(),
+            codex_bin_path: r"D:\tools\codex.exe".to_string(),
         };
         let mut pairs = std::collections::HashMap::new();
         for (key, value) in settings.to_pairs() {
             pairs.insert(key.to_string(), value);
         }
         assert_eq!(AppSettings::from_pairs(&pairs), settings);
+    }
+
+    #[test]
+    fn bin_path_patch_trims_and_rejects_overlong_values() {
+        let current = AppSettings::default();
+        let trimmed = apply_patch(&current, &json!({ "zcodeBinPath": "  D:\\ZCode\\ZCode.exe  " }))
+            .unwrap();
+        assert_eq!(trimmed.zcode_bin_path, r"D:\ZCode\ZCode.exe");
+        assert_eq!(trimmed.codex_bin_path, "");
+
+        let cleared = apply_patch(&trimmed, &json!({ "zcodeBinPath": "  " })).unwrap();
+        assert_eq!(cleared.zcode_bin_path, "");
+
+        let overlong = "x".repeat(MAX_BIN_PATH_CHARS + 1);
+        assert!(apply_patch(&current, &json!({ "codexBinPath": overlong })).is_err());
+        assert!(apply_patch(&current, &json!({ "codexBinPath": 42 })).is_err());
     }
 }

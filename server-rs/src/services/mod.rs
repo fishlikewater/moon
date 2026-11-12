@@ -11,6 +11,7 @@ pub mod context_compaction;
 pub mod custom_harnesses;
 pub mod discussion;
 pub mod files;
+pub mod harness_binaries;
 pub mod harness_models;
 pub mod message_artifacts;
 pub mod moderator;

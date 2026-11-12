@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  binarySourceLabel,
+  binaryStatus,
   formatBytes,
   parseSettingsDraft,
   settingsToDraft,
@@ -15,6 +17,8 @@ const VALID: SettingsDraft = {
   attachmentMaxFileBytes: "26214400",
   attachmentMaxFilesPerMessage: "4",
   runTimeoutSecs: "1800",
+  zcodeBinPath: "",
+  codexBinPath: "",
 };
 
 describe("parseSettingsDraft", () => {
@@ -32,7 +36,33 @@ describe("parseSettingsDraft", () => {
       attachmentMaxFileBytes: 26_214_400,
       attachmentMaxFilesPerMessage: 4,
       runTimeoutSecs: 1800,
+      zcodeBinPath: "",
+      codexBinPath: "",
     });
+  });
+
+  it("覆盖路径去掉首尾空白并允许为空", () => {
+    const filled = parseSettingsDraft({
+      ...VALID,
+      zcodeBinPath: String.raw`  D:\Tools\zcode.cjs  `,
+      codexBinPath: "   ",
+    });
+    expect(filled.ok).toBe(true);
+    if (filled.ok) {
+      expect(filled.settings.zcodeBinPath).toBe(String.raw`D:\Tools\zcode.cjs`);
+      expect(filled.settings.codexBinPath).toBe("");
+    }
+  });
+
+  it("覆盖路径超过上限时报错", () => {
+    const tooLong = "x".repeat(SETTINGS_LIMITS.harnessBinPathChars + 1);
+    const result = parseSettingsDraft({ ...VALID, zcodeBinPath: tooLong });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.zcodeBinPath).toBe(
+        "zcode 路径不能超过 1024 个字符",
+      );
+    }
   });
 
   it("上下文预算上限为一百万", () => {
@@ -63,7 +93,7 @@ describe("parseSettingsDraft", () => {
       const result = parseSettingsDraft({ ...VALID, runTimeoutSecs: value });
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.errors.runTimeoutSecs).toBeTruthy();
+        expect(result.errors.runTimeoutSecs).toMatch(/运行总时长上限/);
       }
     }
   });
@@ -81,7 +111,8 @@ describe("parseSettingsDraft", () => {
       const result = parseSettingsDraft({ ...VALID, [key]: value });
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.errors[errorKey]).toBeTruthy();
+        expect(result.errors[errorKey]).toBeTypeOf("string");
+        expect(Object.keys(result.errors)).toEqual([errorKey]);
       }
     }
   });
@@ -112,6 +143,8 @@ describe("parseSettingsDraft", () => {
         attachmentMaxFileBytes: 2_000_000,
         attachmentMaxFilesPerMessage: 3,
         runTimeoutSecs: 0,
+        zcodeBinPath: "",
+        codexBinPath: "",
       }),
     );
     expect(result.ok).toBe(true);
@@ -120,6 +153,40 @@ describe("parseSettingsDraft", () => {
       expect(result.settings.contextBudgetChars).toBe(12_345);
       expect(result.settings.runTimeoutSecs).toBe(0);
     }
+  });
+});
+
+describe("binarySourceLabel", () => {
+  it("映射已知来源并原样返回未知来源", () => {
+    expect(binarySourceLabel("configured")).toBe("手动指定");
+    expect(binarySourceLabel("protocol")).toBe("URL 协议处理器");
+    expect(binarySourceLabel("vendor_default")).toBe("厂商默认位置");
+    expect(binarySourceLabel("fallback")).toBe("自动检测失败");
+    expect(binarySourceLabel("something-new")).toBe("something-new");
+  });
+});
+
+describe("binaryStatus", () => {
+  it("区分可用、未检测到与路径不存在", () => {
+    expect(
+      binaryStatus({
+        path: String.raw`D:\ZCode\resources\glm\zcode.cjs`,
+        source: "protocol",
+        exists: true,
+        searched: [],
+      }),
+    ).toEqual({ label: "可用", tone: "ok" });
+    expect(
+      binaryStatus({ path: "", source: "fallback", exists: false, searched: [] }),
+    ).toEqual({ label: "未检测到", tone: "warn" });
+    expect(
+      binaryStatus({
+        path: String.raw`D:\missing\codex.exe`,
+        source: "configured",
+        exists: false,
+        searched: [],
+      }),
+    ).toEqual({ label: "路径不存在", tone: "warn" });
   });
 });
 

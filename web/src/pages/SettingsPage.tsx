@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import type { RoomPermissionMode } from "@moon/shared";
+import type { HarnessBinaryStatus, RoomPermissionMode } from "@moon/shared";
 import { api, errorMessage } from "../api/client";
+import { BinaryStatusRow } from "../components/BinaryStatusRow";
 import { ListSkeleton } from "../components/layout/ListSkeleton";
 import { PageHeader } from "../components/layout/PageHeader";
 import {
@@ -52,6 +53,24 @@ export default function SettingsPage() {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [themePreference, setThemePreference] =
     useState<ThemePreference>(initialThemePreference);
+  const [binaries, setBinaries] = useState<{
+    zcode: HarnessBinaryStatus;
+    codex: HarnessBinaryStatus;
+  } | null>(null);
+  const [binaryLoading, setBinaryLoading] = useState(false);
+  const [binaryError, setBinaryError] = useState<string | null>(null);
+
+  const loadBinaries = useCallback(async () => {
+    setBinaryLoading(true);
+    setBinaryError(null);
+    try {
+      setBinaries(await api.harnesses.binaries());
+    } catch (cause) {
+      setBinaryError(errorMessage(cause));
+    } finally {
+      setBinaryLoading(false);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -68,7 +87,8 @@ export default function SettingsPage() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadBinaries();
+  }, [load, loadBinaries]);
 
   // toast 自动消失；重复保存会写入新时间戳，计时随之重置。
   useEffect(() => {
@@ -121,6 +141,7 @@ export default function SettingsPage() {
       const updated = await api.settings.update(parsed.settings);
       setDraft(settingsToDraft(updated));
       setSavedAt(Date.now());
+      void loadBinaries();
     } catch (cause) {
       setSaveError(errorMessage(cause));
     } finally {
@@ -309,6 +330,73 @@ export default function SettingsPage() {
                   </span>
                 )}
               </label>
+            </div>
+          </section>
+
+          <section className="card settings-card" aria-labelledby="settings-harness-binaries">
+            <h2 className="card-title" id="settings-harness-binaries">
+              Harness 可执行文件
+            </h2>
+            <p className="settings-note">
+              留空表示自动检测：读取安装器注册的 URL 协议、卸载信息、App
+              Paths 与 PATH，不扫描固定安装目录。保存后自动刷新检测结果。
+            </p>
+            <div className="form-grid">
+              <label className="field">
+                <span className="field-label">zcode 路径</span>
+                <input
+                  type="text"
+                  value={draft.zcodeBinPath}
+                  placeholder="留空自动检测，可填 ZCode.exe 或 zcode.cjs"
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(event) => update("zcodeBinPath", event.target.value)}
+                  aria-invalid={errors.zcodeBinPath !== undefined}
+                />
+                {errors.zcodeBinPath !== undefined ? (
+                  <span className="field-error">{errors.zcodeBinPath}</span>
+                ) : (
+                  <span className="field-hint">
+                    指向安装目录的 ZCode.exe，或其中的 resources/glm/zcode.cjs。
+                  </span>
+                )}
+              </label>
+              <label className="field">
+                <span className="field-label">codex 路径</span>
+                <input
+                  type="text"
+                  value={draft.codexBinPath}
+                  placeholder="留空自动检测，可填 codex.exe"
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(event) => update("codexBinPath", event.target.value)}
+                  aria-invalid={errors.codexBinPath !== undefined}
+                />
+                {errors.codexBinPath !== undefined ? (
+                  <span className="field-error">{errors.codexBinPath}</span>
+                ) : (
+                  <span className="field-hint">指向 codex 可执行文件。</span>
+                )}
+              </label>
+            </div>
+            <div className="settings-binary-list">
+              <BinaryStatusRow name="zcode" status={binaries?.zcode} />
+              <BinaryStatusRow name="codex" status={binaries?.codex} />
+            </div>
+            <div className="settings-binary-actions">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={binaryLoading}
+                onClick={() => void loadBinaries()}
+              >
+                {binaryLoading ? "检测中…" : "刷新检测"}
+              </button>
+              {binaryError !== null && (
+                <span className="field-error" role="alert">
+                  {binaryError}
+                </span>
+              )}
             </div>
           </section>
 

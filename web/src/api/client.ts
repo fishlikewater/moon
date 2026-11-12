@@ -13,6 +13,7 @@ import type {
   CustomHarnessCreateInput,
   CustomHarnessUpdateInput,
   Discussion,
+  HarnessBinariesResponse,
   HarnessKind,
   HarnessModelCatalog,
   Message,
@@ -226,6 +227,8 @@ export const api = {
       requestJson<HarnessModelCatalog>(
         `/api/harnesses/${encodeURIComponent(harness)}/models`,
       ),
+    binaries: (): Promise<HarnessBinariesResponse> =>
+      requestJson<HarnessBinariesResponse>("/api/harnesses/binaries"),
   },
   acpRegistry: {
     list: (): Promise<AcpRegistryPayload> =>

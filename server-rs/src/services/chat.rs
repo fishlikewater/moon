@@ -807,11 +807,15 @@ impl ChatService {
                         additional_directories.push(dir.clone());
                     }
                 }
+                let run_config = self
+                    .settings
+                    .with_harness_bin_override(agent.harness, agent.model_config.clone())
+                    .await?;
                 let input = RunInput {
                     prompt,
                     workspace_dir,
                     additional_directories,
-                    config: agent.model_config.clone(),
+                    config: run_config,
                     session: run_session.as_ref().map(|session| session.context.clone()),
                     permission_mode: Some(room.permission_mode),
                     timeout: self.settings.run_timeout().await?,
