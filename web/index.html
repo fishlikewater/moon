@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#faf6f0" />
+    <meta
+      name="description"
+      content="Moon 多智能体协作工作台：管理智能体与房间、实时群聊协作、任务看板与执行时间线。"
+    />
+    <title>Moon 开发工作台</title>
+    <!--
+      防闪烁：必须在 head 内同步执行，先于首帧绘制和模块脚本决定主题。
+      规则与 src/useTheme.ts 一致：localStorage["moon-theme"] 优先，
+      否则跟随 prefers-color-scheme，失败时静默回退亮色。
+      色值需与 styles.css 中 --color-bg 的亮/暗取值保持一致。
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("moon-theme");
+          var prefersDark =
+            typeof window.matchMedia === "function" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var theme =
+            stored === "light" || stored === "dark"
+              ? stored
+              : prefersDark
+                ? "dark"
+                : "light";
+
+          document.documentElement.dataset.theme = theme;
+
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) {
+            meta.setAttribute("content", theme === "dark" ? "#201b18" : "#faf6f0");
+          }
+        } catch (error) {
+          document.documentElement.dataset.theme = "light";
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

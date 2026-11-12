@@ -1,0 +1,37 @@
+{
+  "name": "moon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Moon 开发工作台：多智能体房间协作与任务看板",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fishlikewater/moon.git"
+  },
+  "homepage": "https://github.com/fishlikewater/moon#readme",
+  "bugs": {
+    "url": "https://github.com/fishlikewater/moon/issues"
+  },
+  "workspaces": [
+    "shared",
+    "web",
+    "desktop"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "build:shared": "npm run build -w @moon/shared",
+    "dev": "npm run build:shared && concurrently -k -n api,web -c cyan,magenta \"cargo run --manifest-path server-rs/Cargo.toml\" \"npm run dev -w @moon/web\"",
+    "build": "npm run build:shared && npm run build -w @moon/web",
+    "test": "npm run build:shared && npm run test -w @moon/web",
+    "test:rust": "cargo test --manifest-path server-rs/Cargo.toml",
+    "desktop:dev": "npm run build:shared && npm run build -w @moon/web && npm run dev -w @moon/desktop",
+    "desktop:build": "npm run build:shared && npm run build -w @moon/web && npm run build -w @moon/desktop",
+    "tauri": "npm run tauri -w @moon/desktop --"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.5",
+    "typescript": "^5.9.3"
+  }
+}

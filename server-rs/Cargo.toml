@@ -1,0 +1,42 @@
+[package]
+name = "moon-server"
+version = "0.1.0"
+edition = "2021"
+description = "Moon 本地多智能体工作台 Rust 后端"
+license = "Apache-2.0"
+repository = "https://github.com/fishlikewater/moon"
+publish = false
+
+[lib]
+name = "moon_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "moon-server"
+path = "src/main.rs"
+
+[dependencies]
+agent-client-protocol = { version = "5.1.0", features = ["stdio"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+futures-core = "0.3"
+futures-util = "0.3"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["derive", "runtime-tokio", "sqlite"] }
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["compat"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+futures-util = "0.3"
+http-body-util = "0.1"
+tokio-tungstenite = "0.27"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

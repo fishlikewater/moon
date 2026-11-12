@@ -1,0 +1,12 @@
+{
+  "name": "@moon/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Moon 前后端共享契约类型（唯一类型来源）",
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc src/index.ts --outDir dist --declaration --module commonjs --moduleResolution node --target ES2022 --strict --skipLibCheck"
+  }
+}

@@ -1,0 +1,21 @@
+[package]
+name = "moon-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Moon 桌面端（Tauri 2 + 同进程 Rust 后端）"
+license = "Apache-2.0"
+repository = "https://github.com/fishlikewater/moon"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+axum = "0.8"
+moon-server = { path = "../../server-rs" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2.8.4"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
