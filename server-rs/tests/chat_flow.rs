@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::http::StatusCode;
 use common::{
-    builtin_moderator_id, create_agent, create_room, enable_reuse, get, patch, post,
+    builtin_moderator_id, create_agent, create_room, enable_reuse, get, patch, post, put,
     setup_with_adapter, wait_for_runs, wait_for_system_message,
 };
 use moon_server::adapters::{AdapterFactory, EventStream, HarnessAdapter};
@@ -61,6 +61,13 @@ async fn mention_runs_member_and_persists_messages() {
     let agent_id = agent["id"].as_i64().unwrap();
     let room = create_room(&app, "聊天房", &[agent_id]).await;
     let room_id = room["id"].as_i64().unwrap();
+    let disabled = put(
+        &app,
+        &format!("/api/rooms/{room_id}/members/{agent_id}/session-settings"),
+        json!({ "reuseSession": false }),
+    )
+    .await;
+    assert_eq!(disabled.status, StatusCode::OK, "{:?}", disabled.body);
 
     let response = post(
         &app,

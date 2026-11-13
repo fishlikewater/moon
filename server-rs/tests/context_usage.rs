@@ -76,6 +76,32 @@ async fn append_messages(app: &TestApp, room_id: i64, count: usize, content_len:
     }
 }
 
+async fn disable_reuse(app: &TestApp, room_id: i64, agent_id: i64) {
+    let response = put(
+        app,
+        &format!("/api/rooms/{room_id}/members/{agent_id}/session-settings"),
+        json!({ "reuseSession": false }),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
+}
+
+async fn wait_for_watermark(app: &TestApp, room_id: i64, agent_id: i64) {
+    for _ in 0..250 {
+        let session = app
+            .state
+            .session_service
+            .active_session(room_id, agent_id)
+            .await
+            .unwrap();
+        if session.is_some_and(|session| session.last_context_message_id > 0) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("等待上下文水位提交超时");
+}
+
 async fn get_reopened(app: &TestApp, uri: &str) -> (StatusCode, Value) {
     let db = Db::open(app.dir.path().join("moon.db")).await.unwrap();
     let state = AppState::new_with_options(
@@ -145,6 +171,7 @@ async fn context_preview_reports_compaction_and_matches_prompt() {
     let agent_id = agent["id"].as_i64().unwrap();
     let room = create_room(&app, "上下文房", &[agent_id]).await;
     let room_id = room["id"].as_i64().unwrap();
+    disable_reuse(&app, room_id, agent_id).await;
     append_messages(&app, room_id, 25, 4).await;
 
     let preview = get(
@@ -191,6 +218,7 @@ async fn context_preview_handles_budget_disabled_and_invalid_agent() {
     let agent_id = agent["id"].as_i64().unwrap();
     let room = create_room(&app, "预算房", &[agent_id]).await;
     let room_id = room["id"].as_i64().unwrap();
+    disable_reuse(&app, room_id, agent_id).await;
     append_messages(&app, room_id, 25, 300).await;
 
     let missing = get(&app, &format!("/api/rooms/{room_id}/context")).await;
@@ -276,6 +304,7 @@ async fn context_preview_reports_session_reuse() {
     .await;
     assert_eq!(response.status, StatusCode::ACCEPTED, "{:?}", response.body);
     wait_for_runs(&app, room_id, 1).await;
+    wait_for_watermark(&app, room_id, agent_id).await;
 
     let preview = get(
         &app,
@@ -286,14 +315,14 @@ async fn context_preview_reports_session_reuse() {
     assert_eq!(preview.body["sessionReused"], true);
     assert_eq!(preview.body["includedMessages"], 0);
     assert_eq!(preview.body["compressedMessages"], 0);
-    assert_eq!(preview.body["effectiveChars"], 2);
-    assert_eq!(preview.body["estimatedTokens"], 1);
+    assert_eq!(preview.body["effectiveChars"], 0);
+    assert_eq!(preview.body["estimatedTokens"], 0);
 }
 
 #[tokio::test]
 async fn context_preview_reports_reuse_before_first_run() {
-    // 首次开启复用、尚未写入 harness 会话 ID 时，真实运行仍会清空房间
-    // 历史（resolve_run_session 只看 reuse_session），预览必须一致。
+    // 首次开启复用、尚未写入 harness 会话 ID 时，运行按 bootstrap
+    // 注入最近房间历史；预览必须与真实运行一致。
     let (factory, _inputs) = recording_factory(vec![RunEvent::Final("好".to_string())]);
     let app = setup_with_adapter(Some(factory)).await;
     let agent = create_agent(&app, "复用助手").await;
@@ -311,7 +340,11 @@ async fn context_preview_reports_reuse_before_first_run() {
 
     assert_eq!(preview.status, StatusCode::OK, "{:?}", preview.body);
     assert_eq!(preview.body["sessionReused"], true);
-    assert_eq!(preview.body["includedMessages"], 0);
-    assert_eq!(preview.body["effectiveChars"], 2);
-    assert_eq!(preview.body["estimatedTokens"], 1);
+    assert_eq!(preview.body["includedMessages"], 10);
+    assert_eq!(preview.body["compressedMessages"], 4);
+    assert!(preview.body["effectiveChars"].as_u64().unwrap() > 0);
+    assert_eq!(
+        preview.body["estimatedTokens"].as_u64().unwrap(),
+        preview.body["effectiveChars"].as_u64().unwrap().div_ceil(4)
+    );
 }

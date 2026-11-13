@@ -440,6 +440,7 @@ pub fn build_moderator_chat_instruction(
     moderator: &Agent,
     members: &[Agent],
     history: &[Message],
+    preamble: Option<&str>,
     instruction: &str,
     compaction: &CompactionOptions,
 ) -> String {
@@ -499,7 +500,7 @@ pub fn build_moderator_chat_instruction(
         String::new(),
         "房间其他成员（只能使用下列 id；不得指派自己）：".to_string(),
         member_lines,
-        String::new(),
+        preamble.map(|value| format!("{value}\n")).unwrap_or_default(),
         format!(
             "最近对话（按时间顺序，最多 {MODERATOR_CHAT_CONTEXT_LIMIT} 条）："
         ),
@@ -693,6 +694,7 @@ mod tests {
             &moderator,
             &members,
             &[],
+            None,
             "讨论一下",
             &CompactionOptions::default(),
         );
@@ -744,6 +746,7 @@ mod tests {
             &moderator,
             &members,
             &history,
+            None,
             "继续",
             &compaction,
         );

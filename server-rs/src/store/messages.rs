@@ -179,6 +179,42 @@ impl MessageStore {
         self.hydrate_rows(rows).await
     }
 
+    /// 房间当前最大消息 id；无消息时返回 0。用作上下文水位提交上界。
+    pub async fn max_id(&self, room_id: i64) -> AppResult<i64> {
+        let id = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(id), 0) FROM messages WHERE room_id = ?",
+        )
+        .bind(room_id)
+        .fetch_one(self.pool())
+        .await?;
+        Ok(id)
+    }
+
+    /// 取水位之后、快照上界之前的消息，按全局 id 升序。
+    ///
+    /// 清理历史后 `seq` 可能回退或复用，因此增量只认 `id`。
+    pub async fn list_after_id(
+        &self,
+        room_id: i64,
+        after_id: i64,
+        up_to_id: i64,
+    ) -> AppResult<Vec<Message>> {
+        if up_to_id <= after_id {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_as::<_, MessageRow>(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages
+              WHERE room_id = ? AND id > ? AND id <= ?
+              ORDER BY id"
+        ))
+        .bind(room_id)
+        .bind(after_id)
+        .bind(up_to_id)
+        .fetch_all(self.pool())
+        .await?;
+        self.hydrate_rows(rows).await
+    }
+
     /// 运行产生的阶段总结与最终回复按 seq 升序。
     pub async fn list_by_run(&self, run_id: i64) -> AppResult<Vec<Message>> {
         let rows = sqlx::query_as::<_, MessageRow>(&format!(

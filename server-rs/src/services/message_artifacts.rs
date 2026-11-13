@@ -16,6 +16,10 @@ use crate::domain::room::Room;
 pub const ARCHIVE_MIN_CHARS: usize = 8_000;
 /// 转录里保留的摘要长度（字符）。
 pub const ARCHIVE_EXCERPT_CHARS: usize = 400;
+/// 未读摘要的单条上限；比普通历史 160 字摘要更宽，避免讨论细节过早丢失。
+pub const DIGEST_EXCERPT_CHARS: usize = 400;
+/// 未读摘要的总上限。
+pub const DIGEST_MAX_CHARS: usize = 4_000;
 /// 归档文件的单行上限；超过则软换行，保证 Read 工具能完整读取。
 pub const ARCHIVE_LINE_LIMIT: usize = 1_000;
 
@@ -97,6 +101,72 @@ pub fn compact_message_line(room: &Room, message: &Message, label: &str) -> Stri
         message.content.chars().count(),
         file_path.display()
     )
+}
+
+/// 为未读摘要生成一行；超过 limit 时归档全文并给出路径。
+///
+/// 与 `compact_message_line` 的 8,000 字阈值不同：这里只要摘要会截断就归档，
+/// 保证 400–7,999 字的发言仍有可追溯全文。
+pub fn digest_message_line(
+    room: &Room,
+    message: &Message,
+    label: &str,
+    limit: usize,
+) -> String {
+    let prefix = format!("#{} {}：", message.seq, label);
+    let attachments = attachment_prompt_lines(&message.attachments);
+    let total = message.content.chars().count();
+    if total <= limit {
+        return format!("{prefix}{}{attachments}", message.content);
+    }
+
+    let file_path = ensure_message_artifact(&ArtifactInput {
+        workspace_dir: &room.workspace_dir,
+        room_id: room.id,
+        message_id: message.id,
+        room_name: &room.name,
+        sender_label: label,
+        message_seq: message.seq,
+        content: &message.content,
+        created_at: message.created_at,
+    });
+    let excerpt: String = message.content.chars().take(limit).collect();
+    match file_path {
+        Some(file_path) => format!(
+            "{prefix}{excerpt}…\n（完整内容：{}，可用 Read 工具查看）{attachments}",
+            file_path.display()
+        ),
+        None => format!(
+            "{prefix}{excerpt}…（全文共 {total} 字，归档失败；消息 id={}）{attachments}",
+            message.id
+        ),
+    }
+}
+
+/// 估算 `digest_message_line` 的字符数；不写入归档文件。
+///
+/// 预算分配阶段用它计算固定开销，避免为了估算而为尚未确定截断的消息
+/// 提前生成归档。
+pub fn digest_line_chars(
+    room: &Room,
+    message: &Message,
+    label: &str,
+    limit: usize,
+) -> usize {
+    let prefix = format!("#{} {}：", message.seq, label);
+    let attachments = attachment_prompt_lines(&message.attachments);
+    let total = message.content.chars().count();
+    if total <= limit {
+        return prefix.chars().count() + total + attachments.chars().count();
+    }
+    let path = archive_path(&room.workspace_dir, room.id, message.id)
+        .display()
+        .to_string();
+    prefix.chars().count()
+        + limit
+        + "…\n（完整内容：，可用 Read 工具查看）".chars().count()
+        + path.chars().count()
+        + attachments.chars().count()
 }
 
 /// 附件清单：每条消息列出名称、MIME、大小与本机绝对路径。

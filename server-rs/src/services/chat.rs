@@ -48,8 +48,10 @@ use crate::services::context_compaction::{
 };
 use crate::services::discussion::DiscussionService;
 use crate::services::message_artifacts::{
-    compact_message_line, context_messages, instruction_with_attachments, save_message_artifact,
-    ArtifactInput, ARCHIVE_MIN_CHARS,
+    archive_path, compact_message_line, context_messages, digest_line_chars,
+    digest_message_line, ensure_message_artifact, instruction_with_attachments,
+    save_message_artifact, ArtifactInput, ARCHIVE_MIN_CHARS, DIGEST_EXCERPT_CHARS,
+    DIGEST_MAX_CHARS,
 };
 use crate::services::moderator::{
     build_delegated_instruction, build_moderator_chat_instruction, extract_moderator_action,
@@ -141,6 +143,24 @@ pub struct RunAgentOptions {
     pub collaboration: Option<MessageCollaboration>,
     /// 成功输出落库前的结构化转换。
     pub finalize: Option<FinalizeFn>,
+}
+
+/// 运行前解析出的会话状态；`session_id=None` 表示仅预览，不提交水位。
+#[derive(Debug, Clone)]
+struct SessionHistoryState {
+    session_id: Option<i64>,
+    has_harness_session: bool,
+    last_context_message_id: i64,
+}
+
+/// 一次运行实际使用的房间历史：最近窗口 + 更早未读摘要。
+#[derive(Debug, Clone, Default)]
+struct LoadedHistory {
+    recent: Vec<Message>,
+    older_unread: Vec<Message>,
+    snapshot_max: i64,
+    session_id: Option<i64>,
+    commit_watermark: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -668,17 +688,30 @@ impl ChatService {
     ) -> AppResult<AgentRun> {
         let room = self.require_room(room_id).await?;
 
-        // 复用会话时 harness 侧已持有对话上下文，不再重复拼接房间历史。
+        // 复用会话时 harness 侧已持有对话上下文，只补它尚未看过的房间增量；
+        // 首次复用（尚无 harness 会话 ID）先注入一次最近历史作为 bootstrap。
         let run_session = match &self.session_service {
             Some(service) => service.resolve_run_session(room_id, agent).await?,
             None => None,
         };
-        let history = if options.skip_room_context || run_session.is_some() {
-            Vec::new()
-        } else {
-            self.messages.list_by_room(room_id).await?
-        };
-        let prompt = self.build_prompt(&room, agent, &history, instruction, options).await?;
+        let session_state = run_session.as_ref().map(|session| SessionHistoryState {
+            session_id: Some(session.id),
+            has_harness_session: session.context.harness_session_id.is_some(),
+            last_context_message_id: session.context.last_context_message_id,
+        });
+        let loaded = self
+            .load_history(room_id, agent, session_state.as_ref(), options.skip_room_context)
+            .await?;
+        let prompt = self
+            .build_prompt(
+                &room,
+                agent,
+                &loaded.recent,
+                &loaded.older_unread,
+                instruction,
+                options,
+            )
+            .await?;
         let streaming = options.stream.unwrap_or(true);
         let discussion = options.discussion.map(|reference| MessageDiscussion {
             discussion_id: reference.discussion_id,
@@ -1189,6 +1222,27 @@ impl ChatService {
             )
             .await?
             .unwrap_or_else(|| run.clone());
+        // 只有成功运行才推进水位；失败重试时保留旧水位，最多重复投递一次。
+        if loaded.commit_watermark {
+            if let (Some(session_id), Some(service)) = (loaded.session_id, &self.session_service)
+            {
+                if let Err(error) = service
+                    .advance_context_watermark(session_id, loaded.snapshot_max)
+                    .await
+                {
+                    tracing::warn!(
+                        event = "context_watermark_failed",
+                        room_id,
+                        agent_id = agent.id,
+                        run_id = run.id,
+                        session_id,
+                        snapshot_max = loaded.snapshot_max,
+                        error = %error.message,
+                        "context watermark commit failed"
+                    );
+                }
+            }
+        }
         self.broadcast(room_id, RoomEvent::MessageFinal {
             room_id,
             message: final_message.clone(),
@@ -1934,6 +1988,9 @@ impl ChatService {
         };
 
         let next_round = batch.current_round + 1;
+        // 下一轮成员通过增量看到本轮全文；这里再补一条精简的轮次结论，
+        // 不新增逐发言主持人调用。
+        let round_summary: String = parsed.review.summary.chars().take(2_000).collect();
         let mut next_assignments = Vec::new();
         for item in parsed.review.next_assignments {
             next_assignments.push(
@@ -1952,7 +2009,7 @@ impl ChatService {
         if let Some(advanced) = service.store.get_by_id(batch_id).await? {
             service.broadcast_batch(&advanced);
         }
-        self.spawn_collaboration_round(room, moderator, batch_id, next_assignments, String::new());
+        self.spawn_collaboration_round(room, moderator, batch_id, next_assignments, round_summary);
         Ok(())
     }
 
@@ -2116,42 +2173,241 @@ impl ChatService {
             .ok_or_else(|| AppError::not_found(format!("房间不存在：{room_id}")))
     }
 
-    /// 构建运行提示词：身份与人设 + 房间最近对话 + 当前指令。
+    /// 运行前加载房间历史：复用会话只取未读增量，首次复用取最近历史。
+    async fn load_history(
+        &self,
+        room_id: i64,
+        agent: &Agent,
+        session: Option<&SessionHistoryState>,
+        skip_room_context: bool,
+    ) -> AppResult<LoadedHistory> {
+        if skip_room_context {
+            return Ok(LoadedHistory::default());
+        }
+
+        let Some(session) = session else {
+            // 未开启复用：保持原有「每次独立会话、带最近房间历史」行为。
+            return Ok(LoadedHistory {
+                recent: context_messages(&self.messages.list_by_room(room_id).await?),
+                ..LoadedHistory::default()
+            });
+        };
+
+        let snapshot_max = self.messages.max_id(room_id).await?;
+        let mut messages = if session.has_harness_session {
+            self.messages
+                .list_after_id(room_id, session.last_context_message_id, snapshot_max)
+                .await?
+        } else {
+            // 新建会话（或切换 harness 后的新会话）：注入最近历史作为 bootstrap。
+            self.messages.list_by_room(room_id).await?
+        };
+        messages = context_messages(&messages);
+        if session.has_harness_session {
+            // 自己的历史回复已经进入 harness 会话，增量里不再重复。
+            messages.retain(|message| message.sender_agent_id != Some(agent.id));
+        }
+
+        let split = messages.len().saturating_sub(CONTEXT_MAX_MESSAGES);
+        let older_unread = messages[..split].to_vec();
+        let recent = messages[split..].to_vec();
+        Ok(LoadedHistory {
+            recent,
+            older_unread,
+            snapshot_max,
+            session_id: session.session_id,
+            commit_watermark: session.session_id.is_some(),
+        })
+    }
+
+    /// 为超出最近窗口的未读消息生成摘要；被截断的消息补归档路径。
+    async fn build_unread_preamble(
+        &self,
+        room: &Room,
+        messages: &[Message],
+        max_chars: usize,
+    ) -> AppResult<Option<String>> {
+        if messages.is_empty() || max_chars == 0 {
+            return Ok(None);
+        }
+        let members = self.rooms.list_members(room.id).await?;
+        let member_names: HashMap<i64, String> = members
+            .into_iter()
+            .map(|member| (member.id, member.name))
+            .collect();
+        let mut resolved_sender_names = HashMap::new();
+        let mut labels = Vec::with_capacity(messages.len());
+        for message in messages {
+            labels.push(
+                self.resolve_message_label(message, &member_names, &mut resolved_sender_names)
+                    .await?,
+            );
+        }
+
+        let header = format!(
+            "更早未读消息摘要（共 {} 条，按时间顺序）：",
+            messages.len()
+        );
+        // 先按最小摘录估算每条固定开销（前缀、归档路径、换行），再把剩余
+        // 预算平均分给正文；估算不写文件，避免为未截断的短消息误建归档。
+        let mut fixed_chars = header.chars().count();
+        for (message, label) in messages.iter().zip(&labels) {
+            fixed_chars += 2;
+            fixed_chars += digest_line_chars(room, message, label, 1);
+        }
+        if fixed_chars >= max_chars {
+            // 逐条保留绝对归档路径；摘要正文不再展开。
+            let mut lines = vec![format!(
+                "更早未读消息摘要（共 {} 条）：空间不足，未展示正文；完整内容见下列文件：",
+                messages.len()
+            )];
+            for (message, label) in messages.iter().zip(&labels) {
+                let archived = ensure_message_artifact(&ArtifactInput {
+                    workspace_dir: &room.workspace_dir,
+                    room_id: room.id,
+                    message_id: message.id,
+                    room_name: &room.name,
+                    sender_label: label,
+                    message_seq: message.seq,
+                    content: &message.content,
+                    created_at: message.created_at,
+                });
+                match archived {
+                    Some(path) => lines.push(format!(
+                        "- #{} {}：{}",
+                        message.seq,
+                        label,
+                        path.display()
+                    )),
+                    None => lines.push(format!(
+                        "- #{} {}：归档失败；消息 id={}",
+                        message.seq, label, message.id
+                    )),
+                }
+            }
+            let text = lines.join("\n");
+            if text.chars().count() <= max_chars {
+                return Ok(Some(text));
+            }
+            // 绝对路径仍放不下时，目录只出现一次，逐条保留文件名。
+            let artifact_dir = archive_path(&room.workspace_dir, room.id, 0)
+                .parent()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| room.workspace_dir.clone());
+            let mut lines = vec![format!(
+                "更早未读消息摘要（共 {} 条）：空间不足；归档目录：{artifact_dir}/",
+                messages.len()
+            )];
+            for message in messages {
+                lines.push(format!("- message-{}.md", message.id));
+            }
+            return Ok(Some(truncate_chars(&lines.join("\n"), max_chars)));
+        }
+
+        let remaining = max_chars - fixed_chars;
+        let per_item = (remaining / messages.len())
+            .saturating_add(1)
+            .clamp(1, DIGEST_EXCERPT_CHARS);
+        let mut lines = vec![header];
+        for (message, label) in messages.iter().zip(&labels) {
+            lines.push(format!(
+                "- {}",
+                digest_message_line(room, message, label, per_item)
+            ));
+        }
+        Ok(Some(lines.join("\n")))
+    }
+
+    async fn resolve_message_label(
+        &self,
+        message: &Message,
+        member_names: &HashMap<i64, String>,
+        resolved_sender_names: &mut HashMap<i64, String>,
+    ) -> AppResult<String> {
+        Ok(match message.sender_type {
+            MessageSenderType::System => "系统".to_string(),
+            MessageSenderType::User => "用户".to_string(),
+            MessageSenderType::Agent => match message.sender_agent_id {
+                None => "智能体".to_string(),
+                Some(sender_id) => {
+                    if let Some(name) = member_names.get(&sender_id) {
+                        name.clone()
+                    } else if let Some(name) = resolved_sender_names.get(&sender_id) {
+                        name.clone()
+                    } else {
+                        let name = self
+                            .agents
+                            .get_by_id(sender_id)
+                            .await?
+                            .map(|agent| agent.name)
+                            .unwrap_or_else(|| format!("智能体#{sender_id}"));
+                        resolved_sender_names.insert(sender_id, name.clone());
+                        name
+                    }
+                }
+            },
+        })
+    }
+
+    /// 构建运行提示词：身份与人设 + 更早未读摘要 + 房间最近对话 + 当前指令。
     async fn build_prompt(
         &self,
         room: &Room,
         agent: &Agent,
         history: &[Message],
+        older_unread: &[Message],
         instruction: &str,
         options: &RunAgentOptions,
     ) -> AppResult<String> {
+        // 更早未读摘要先于最近窗口构建；摘要最多占用可用预算的一半，
+        // 预算同时扣除它与当前指令，避免低预算下摘要本身超限。
+        let settings = self.settings.get().await?.settings;
+        let instruction_chars = instruction.chars().count();
+        let available_budget =
+            usize::try_from(settings.context_budget_chars).unwrap_or(0);
+        let digest_budget =
+            DIGEST_MAX_CHARS.min(available_budget.saturating_sub(instruction_chars) / 2);
+        let preamble = if options.skip_room_context {
+            None
+        } else {
+            self.build_unread_preamble(room, older_unread, digest_budget)
+                .await?
+        };
+        let preamble_chars = preamble.as_ref().map_or(0, |value| value.chars().count());
+
         // 主持人普通聊天走专用协议提示词；编排循环的提示词由引擎自建。
         if options.moderator_chat && agent.builtin_role == Some(BuiltinAgentRole::Moderator) {
             let members = self.rooms.list_members(room.id).await?;
-            let settings = self.settings.get().await?.settings;
-            let compaction = CompactionOptions::new(
+            let mut compaction = CompactionOptions::new(
                 settings.context_compression_enabled,
                 settings.context_budget_chars,
             );
+            compaction.budget_chars = compaction
+                .budget_chars
+                .saturating_sub(instruction_chars + preamble_chars);
             return Ok(build_moderator_chat_instruction(
                 room,
                 agent,
                 &members,
                 history,
+                preamble.as_deref(),
                 instruction,
                 &compaction,
             ));
         }
 
+        // instruction 已自带完整上下文（讨论、轮次评审等），不再包房间历史。
         if options.skip_room_context {
             return Ok(instruction.to_string());
         }
 
-        let settings = self.settings.get().await?.settings;
-        let compaction = CompactionOptions::new(
+        let mut compaction = CompactionOptions::new(
             settings.context_compression_enabled,
             settings.context_budget_chars,
         );
+        compaction.budget_chars = compaction
+            .budget_chars
+            .saturating_sub(instruction_chars + preamble_chars);
         let context = self
             .build_history_transcript(room, history, &compaction)
             .await?;
@@ -2160,8 +2416,14 @@ impl ChatService {
             format!("你是房间「{}」中的智能体「{}」。", room.name, agent.name),
             format!("人设：{}", agent.persona),
             String::new(),
-            format!("房间最近对话（按时间顺序，最多 {CONTEXT_MAX_MESSAGES} 条）："),
         ];
+        if let Some(preamble) = &preamble {
+            lines.push(preamble.clone());
+            lines.push(String::new());
+        }
+        lines.push(format!(
+            "房间最近对话（按时间顺序，最多 {CONTEXT_MAX_MESSAGES} 条）："
+        ));
         if context.compressed > 0 || context.omitted > 0 {
             lines.push(format!(
                 "（已压缩 {} 条早期消息，省略 {} 条）",
@@ -2203,29 +2465,9 @@ impl ChatService {
         let recent = context_messages(history);
         let mut labeled: Vec<(String, &Message)> = Vec::with_capacity(recent.len());
         for message in &recent {
-            let label = match message.sender_type {
-                MessageSenderType::System => "系统".to_string(),
-                MessageSenderType::User => "用户".to_string(),
-                MessageSenderType::Agent => match message.sender_agent_id {
-                    None => "智能体".to_string(),
-                    Some(sender_id) => {
-                        if let Some(name) = member_names.get(&sender_id) {
-                            name.clone()
-                        } else if let Some(name) = resolved_sender_names.get(&sender_id) {
-                            name.clone()
-                        } else {
-                            let name = self
-                                .agents
-                                .get_by_id(sender_id)
-                                .await?
-                                .map(|agent| agent.name)
-                                .unwrap_or_else(|| format!("智能体#{sender_id}"));
-                            resolved_sender_names.insert(sender_id, name.clone());
-                            name
-                        }
-                    }
-                },
-            };
+            let label = self
+                .resolve_message_label(message, &member_names, &mut resolved_sender_names)
+                .await?;
             labeled.push((label, message));
         }
 
@@ -2277,47 +2519,86 @@ impl ChatService {
             .map(String::as_str)
             .unwrap_or("");
         let settings = self.settings.get().await?.settings;
-        // 与 `resolve_run_session` 保持一致：只要成员开启复用，运行就会清空
-        // 房间历史（首次复用也不例外），预览必须如实反映。
-        let session_reused = self
-            .rooms
-            .list_member_session_settings(room_id)
-            .await?
-            .into_iter()
-            .any(|item| item.agent_id == agent.id && item.reuse_session);
-        if session_reused {
-            let chars = instruction.chars().count();
-            return Ok(ContextPreview {
-                enabled: settings.context_compression_enabled,
-                budget_chars: settings.context_budget_chars,
-                raw_chars: chars,
-                effective_chars: chars,
-                estimated_tokens: estimate_tokens(chars),
-                included_messages: 0,
-                compressed_messages: 0,
-                omitted_messages: 0,
-                session_reused: true,
-            });
-        }
+        // 与 `resolve_run_session` 一致：没有会话服务时运行不会复用。
+        let session_reused = self.session_service.is_some()
+            && self
+                .rooms
+                .list_member_session_settings(room_id)
+                .await?
+                .into_iter()
+                .any(|item| item.agent_id == agent.id && item.reuse_session);
 
-        let history = self.messages.list_by_room(room_id).await?;
-        let compaction = CompactionOptions::new(
+        // 预览不创建会话：有 active 会话时按其水位取增量；没有（或 harness
+        // 已变化）时按首次运行的 bootstrap 计算，和真实运行保持一致。
+        let session_state = if session_reused {
+            let active = match &self.session_service {
+                Some(service) => service.active_session(room_id, agent.id).await?,
+                None => None,
+            };
+            let active = active.filter(|session| session.harness == agent.harness);
+            Some(match active {
+                Some(session) => SessionHistoryState {
+                    session_id: None,
+                    has_harness_session: session.harness_session_id.is_some(),
+                    last_context_message_id: session.last_context_message_id,
+                },
+                None => SessionHistoryState {
+                    session_id: None,
+                    has_harness_session: false,
+                    last_context_message_id: 0,
+                },
+            })
+        } else {
+            None
+        };
+        let loaded = self
+            .load_history(room_id, &agent, session_state.as_ref(), false)
+            .await?;
+        let instruction_chars = instruction.chars().count();
+        let available_budget =
+            usize::try_from(settings.context_budget_chars).unwrap_or(0);
+        let digest_budget =
+            DIGEST_MAX_CHARS.min(available_budget.saturating_sub(instruction_chars) / 2);
+        let preamble = self
+            .build_unread_preamble(&room, &loaded.older_unread, digest_budget)
+            .await?;
+        let preamble_chars = preamble.as_ref().map_or(0, |value| value.chars().count());
+        let older_raw_chars: usize = loaded
+            .older_unread
+            .iter()
+            .map(|message| message.content.chars().count())
+            .sum();
+        let mut compaction = CompactionOptions::new(
             settings.context_compression_enabled,
             settings.context_budget_chars,
         );
+        compaction.budget_chars = compaction
+            .budget_chars
+            .saturating_sub(instruction_chars + preamble_chars);
         let context = self
-            .build_history_transcript(&room, &history, &compaction)
+            .build_history_transcript(&room, &loaded.recent, &compaction)
             .await?;
+        let compressed = context.compressed + loaded.older_unread.len();
+        let included = context.included + loaded.older_unread.len();
+        let effective_chars = if loaded.recent.is_empty() {
+            0
+        } else {
+            context.effective_chars + preamble_chars
+        };
         Ok(ContextPreview {
             enabled: settings.context_compression_enabled,
             budget_chars: settings.context_budget_chars,
-            raw_chars: context.raw_chars,
-            effective_chars: context.effective_chars,
-            estimated_tokens: estimate_tokens(context.effective_chars),
-            included_messages: context.included,
-            compressed_messages: context.compressed,
+            raw_chars: if loaded.recent.is_empty() {
+                0
+            } else {
+                context.raw_chars + older_raw_chars
+            },
+            effective_chars,
+            estimated_tokens: estimate_tokens(effective_chars),
+            included_messages: included,
+            compressed_messages: compressed,
             omitted_messages: context.omitted,
-            session_reused: false,
+            session_reused,
         })
     }
 }
@@ -2370,6 +2651,17 @@ fn parse_reply_to_id(value: Option<&Value>) -> AppResult<Option<i64>> {
             .map(Some)
             .ok_or_else(|| AppError::validation("replyToId 必须是正整数")),
     }
+}
+
+/// 按字符数截断，避免把多字节字符切成非法 UTF-8。
+fn truncate_chars(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let keep = limit.saturating_sub(1);
+    let mut truncated: String = text.chars().take(keep).collect();
+    truncated.push('…');
+    truncated
 }
 
 /// 把被回复消息压成一行引用，作为本轮指令的上下文前缀。

@@ -32,7 +32,20 @@ export function formatContextMetric(preview: ContextPreview): string {
 
 export function formatContextSummary(preview: ContextPreview): string {
   if (preview.sessionReused) {
-    return "复用会话，仅发送增量";
+    const parts = ["复用会话"];
+    if (preview.includedMessages > 0) {
+      parts.push(`纳入 ${preview.includedMessages} 条`);
+    }
+    if (preview.compressedMessages > 0) {
+      parts.push(`压缩 ${preview.compressedMessages} 条`);
+    }
+    if (preview.omittedMessages > 0) {
+      parts.push(`省略 ${preview.omittedMessages} 条`);
+    }
+    if (preview.includedMessages === 0 && preview.omittedMessages === 0) {
+      parts.push("仅发送当前指令");
+    }
+    return parts.join(" · ");
   }
   if (!preview.enabled) {
     return `压缩已关闭 · 纳入 ${preview.includedMessages} 条`;

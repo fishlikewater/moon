@@ -72,8 +72,17 @@ describe("formatContextMetric / formatContextSummary", () => {
       "压缩已关闭 · 纳入 20 条",
     );
     expect(formatContextSummary(preview({ sessionReused: true }))).toBe(
-      "复用会话，仅发送增量",
+      "复用会话 · 纳入 20 条 · 压缩 14 条",
     );
+    expect(
+      formatContextSummary(
+        preview({
+          sessionReused: true,
+          includedMessages: 0,
+          compressedMessages: 0,
+        }),
+      ),
+    ).toBe("复用会话 · 仅发送当前指令");
   });
 });
 

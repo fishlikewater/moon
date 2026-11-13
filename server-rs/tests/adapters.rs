@@ -310,6 +310,7 @@ console.log(JSON.stringify({ type: 'result', payload: { response: '你好' } }))
         session: Some(RunSessionContext {
             harness_session_id: Some("old-session".to_string()),
             storage_dir: storage.to_string_lossy().into_owned(),
+            last_context_message_id: 0,
         }),
         permission_mode: Some(RoomPermissionMode::Plan),
         timeout: None,
@@ -425,6 +426,7 @@ process.stdin.on('end', () => {
         session: Some(RunSessionContext {
             harness_session_id: Some("thread-old".to_string()),
             storage_dir: storage.to_string_lossy().into_owned(),
+            last_context_message_id: 0,
         }),
         permission_mode: Some(RoomPermissionMode::Auto),
         timeout: None,
@@ -478,6 +480,7 @@ fn isolated_session_keeps_persistent_storage() {
     let plan = plan_session_env(Some(&RunSessionContext {
         harness_session_id: None,
         storage_dir: storage.to_string_lossy().into_owned(),
+        last_context_message_id: 0,
     }))
     .unwrap();
     assert_eq!(

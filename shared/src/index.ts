@@ -674,13 +674,16 @@ export interface ContextPreview {
   budgetChars: number;
   /** 压缩前，被考虑消息的正文与附件清单字符数。 */
   rawChars: number;
-  /** 实际进入提示词的历史转录字符数；复用会话时为增量指令字符数。 */
+  /** 实际进入提示词的历史转录字符数（含更早未读摘要），不含当前指令。 */
   effectiveChars: number;
   /** 固定 ceil(chars / 4)，只用于展示。 */
   estimatedTokens: number;
+  /** 实际纳入上下文的消息条数（含被摘要的更早未读）。 */
   includedMessages: number;
+  /** 被压缩为摘要的消息条数（窗口内压缩 + 更早未读摘要）。 */
   compressedMessages: number;
   omittedMessages: number;
+  /** 成员开启了会话复用；首次运行仍会 bootstrap 最近历史。 */
   sessionReused: boolean;
 }
 

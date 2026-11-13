@@ -56,7 +56,8 @@ impl SessionStore {
     ) -> AppResult<Option<StoredAgentSession>> {
         let row = sqlx::query_as::<_, SessionRow>(
             "SELECT id, room_id, agent_id, harness, harness_session_id, status,
-                    storage_dir, created_at, last_used_at, last_run_id
+                    storage_dir, created_at, last_used_at, last_run_id,
+                    last_context_message_id
                FROM agent_sessions
               WHERE room_id = ? AND agent_id = ? AND status = 'active'",
         )
@@ -88,8 +89,9 @@ impl SessionStore {
         let result = sqlx::query(
             "INSERT INTO agent_sessions
                (room_id, agent_id, harness, harness_session_id, status,
-                storage_dir, created_at, last_used_at, last_run_id)
-             VALUES (?, ?, ?, NULL, 'active', ?, ?, NULL, NULL)",
+                storage_dir, created_at, last_used_at, last_run_id,
+                last_context_message_id)
+             VALUES (?, ?, ?, NULL, 'active', ?, ?, NULL, NULL, 0)",
         )
         .bind(input.room_id)
         .bind(input.agent_id)
@@ -111,6 +113,7 @@ impl SessionStore {
                 created_at,
                 last_used_at: None,
                 last_run_id: None,
+                last_context_message_id: 0,
             }),
             Err(error) => {
                 if let sqlx::Error::Database(db_error) = &error {
@@ -157,6 +160,23 @@ impl SessionStore {
         Ok(())
     }
 
+    /// 成功后提交上下文水位；只前进不后退，避免迟到的提交覆盖新值。
+    pub async fn advance_context_watermark(&self, id: i64, message_id: i64) -> AppResult<()> {
+        if message_id <= 0 {
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE agent_sessions
+                SET last_context_message_id = MAX(last_context_message_id, ?)
+              WHERE id = ?",
+        )
+        .bind(message_id)
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
     /// 归档：保留记录与存储，后续运行不再续接该会话。
     pub async fn archive(&self, id: i64) -> AppResult<bool> {
         let result = sqlx::query(
@@ -180,7 +200,8 @@ impl SessionStore {
     pub async fn get_by_id(&self, id: i64) -> AppResult<Option<StoredAgentSession>> {
         let row = sqlx::query_as::<_, SessionRow>(
             "SELECT id, room_id, agent_id, harness, harness_session_id, status,
-                    storage_dir, created_at, last_used_at, last_run_id
+                    storage_dir, created_at, last_used_at, last_run_id,
+                    last_context_message_id
                FROM agent_sessions WHERE id = ?",
         )
         .bind(id)
@@ -212,7 +233,8 @@ impl SessionStore {
     pub async fn list_by_room(&self, room_id: i64) -> AppResult<Vec<StoredAgentSession>> {
         let rows = sqlx::query_as::<_, SessionRow>(
             "SELECT id, room_id, agent_id, harness, harness_session_id, status,
-                    storage_dir, created_at, last_used_at, last_run_id
+                    storage_dir, created_at, last_used_at, last_run_id,
+                    last_context_message_id
                FROM agent_sessions
               WHERE room_id = ?
               ORDER BY id DESC",
@@ -250,6 +272,7 @@ struct SessionRow {
     created_at: i64,
     last_used_at: Option<i64>,
     last_run_id: Option<i64>,
+    last_context_message_id: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -309,6 +332,7 @@ fn map_session_row(row: SessionRow) -> AppResult<StoredAgentSession> {
         created_at: row.created_at,
         last_used_at: row.last_used_at,
         last_run_id: row.last_run_id,
+        last_context_message_id: row.last_context_message_id,
     })
 }
 

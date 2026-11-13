@@ -292,3 +292,93 @@ async fn v14_adds_acp_capability_columns() {
     assert!(columns.contains(&"probed_at".to_string()));
     db.close().await;
 }
+
+#[tokio::test]
+async fn v21_backfills_reuse_and_context_watermarks_by_session_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v20.db");
+    let db = Db::open(&path).await.unwrap();
+
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO agents (id, name, persona, harness, created_at)
+        VALUES (1, '无会话ID', '人设', 'fake', 1),
+               (2, '有会话ID', '人设', 'fake', 1);
+
+        INSERT INTO rooms (id, name, workspace_dir, created_at)
+        VALUES (1, '迁移房', 'E:/tmp/migrate', 1);
+
+        INSERT INTO room_members (room_id, agent_id, reuse_session)
+        VALUES (1, 1, 0), (1, 2, 0);
+
+        INSERT INTO messages (room_id, seq, sender_type, status, content, created_at)
+        VALUES (1, 1, 'user', 'final', '第一条', 1),
+               (1, 2, 'user', 'final', '第二条', 1);
+
+        INSERT INTO agent_sessions
+          (room_id, agent_id, harness, harness_session_id, status, storage_dir, created_at)
+        VALUES
+          (1, 1, 'fake', NULL, 'active', 'room-1/agent-1/s-new', 1),
+          (1, 2, 'fake', 'sess-2', 'active', 'room-1/agent-2/s-old', 1);
+        "#,
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // 回到 v20：删掉 v21 新列，模拟升级前的数据库。
+    let columns_before: Vec<String> = sqlx::query("PRAGMA table_info(agent_sessions)")
+        .fetch_all(db.pool())
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert!(
+        columns_before.contains(&"last_context_message_id".to_string()),
+        "v21 应已添加列：{columns_before:?}"
+    );
+    sqlx::raw_sql(
+        "ALTER TABLE agent_sessions DROP COLUMN last_context_message_id;
+         PRAGMA user_version = 20;",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.close().await;
+
+    let db = Db::open(&path).await.unwrap();
+    assert_eq!(db.user_version().await.unwrap(), LATEST_VERSION);
+
+    let no_harness: i64 = sqlx::query_scalar(
+        "SELECT last_context_message_id FROM agent_sessions WHERE agent_id = 1",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    let with_harness: i64 = sqlx::query_scalar(
+        "SELECT last_context_message_id FROM agent_sessions WHERE agent_id = 2",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(no_harness, 0, "无 harness 会话应从 0 开始，允许 bootstrap");
+    assert_eq!(with_harness, 2, "已有会话应跳过房间当前历史");
+
+    let member_reuse: Vec<i64> =
+        sqlx::query_scalar("SELECT reuse_session FROM room_members ORDER BY agent_id")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(member_reuse, vec![1, 1], "存量成员应回填默认复用");
+
+    let columns: Vec<String> = sqlx::query("PRAGMA table_info(agent_sessions)")
+        .fetch_all(db.pool())
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert!(columns.contains(&"last_context_message_id".to_string()));
+    db.close().await;
+}

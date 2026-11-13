@@ -2669,9 +2669,7 @@ export default function RoomPage() {
               </header>
               <div className="context-card">
                 <p className="context-metric">
-                  {contextPreview.sessionReused
-                    ? "复用会话"
-                    : formatContextMetric(contextPreview)}
+                  {formatContextMetric(contextPreview)}
                 </p>
                 <p className="context-summary">
                   {formatContextSummary(contextPreview)}

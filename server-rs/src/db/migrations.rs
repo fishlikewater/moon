@@ -11,7 +11,7 @@ use sqlx::{Row, SqlitePool, Transaction};
 
 use crate::error::AppResult;
 
-pub const LATEST_VERSION: i64 = 20;
+pub const LATEST_VERSION: i64 = 21;
 
 enum Step {
     /// 一段可包含多条语句的 DDL/DML。
@@ -297,7 +297,36 @@ const MIGRATIONS: &[Migration] = &[
             ),
         ],
     },
+    Migration {
+        version: 21,
+        steps: &[
+            Step::AddColumn {
+                table: "agent_sessions",
+                column: "last_context_message_id",
+                definition: "INTEGER NOT NULL DEFAULT 0",
+            },
+            Step::Sql(V21_CONTEXT_WATERMARK),
+        ],
+    },
 ];
+
+/// v21：会话复用改为默认开启，并按会话状态初始化上下文水位。
+///
+/// - 新建/无 harness 会话从 0 开始，首次运行可 bootstrap 最近房间历史；
+/// - 已有 harness 会话从房间当前最大消息 id 开始，避免重复投递。
+const V21_CONTEXT_WATERMARK: &str = r#"
+UPDATE room_members SET reuse_session = 1;
+
+UPDATE agent_sessions
+   SET last_context_message_id = CASE
+         WHEN harness_session_id IS NULL THEN 0
+         ELSE (
+           SELECT COALESCE(MAX(id), 0)
+             FROM messages
+            WHERE messages.room_id = agent_sessions.room_id
+         )
+       END;
+"#;
 
 /// 按 `PRAGMA user_version` 推进迁移，返回迁移后的版本号。
 pub async fn run_migrations(pool: &SqlitePool) -> AppResult<i64> {

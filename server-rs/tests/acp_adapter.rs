@@ -339,6 +339,7 @@ async fn acp_adapter_resumes_session_when_reuse_enabled() {
             Some(RunSessionContext {
                 harness_session_id: Some(first_session.clone()),
                 storage_dir: storage_dir.to_string_lossy().to_string(),
+                last_context_message_id: 0,
             }),
         ),
     )
@@ -421,6 +422,7 @@ async fn acp_adapter_skips_load_when_agent_lacks_capability() {
             Some(RunSessionContext {
                 harness_session_id: Some(session_id),
                 storage_dir: storage_dir.to_string_lossy().to_string(),
+                last_context_message_id: 0,
             }),
         ),
     )
@@ -987,6 +989,7 @@ async fn acp_adapter_falls_back_to_new_session_when_load_fails() {
             Some(RunSessionContext {
                 harness_session_id: Some(first_session.clone()),
                 storage_dir: harness.dir.path().join("storage").to_string_lossy().to_string(),
+                last_context_message_id: 0,
             }),
         ),
     )

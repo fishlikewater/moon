@@ -69,11 +69,14 @@ impl RoomStore {
         let id = result.last_insert_rowid();
 
         for agent_id in &member_ids {
-            sqlx::query("INSERT INTO room_members (room_id, agent_id) VALUES (?, ?)")
-                .bind(id)
-                .bind(agent_id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "INSERT INTO room_members (room_id, agent_id, reuse_session)
+                 VALUES (?, ?, 1)",
+            )
+            .bind(id)
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await?;
         }
         tx.commit().await?;
 
@@ -176,11 +179,14 @@ impl RoomStore {
 
     /// 加成员是幂等的：已是成员时不报错，便于前端重复提交。
     pub async fn add_member(&self, room_id: i64, agent_id: i64) -> AppResult<()> {
-        sqlx::query("INSERT OR IGNORE INTO room_members (room_id, agent_id) VALUES (?, ?)")
-            .bind(room_id)
-            .bind(agent_id)
-            .execute(self.pool())
-            .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO room_members (room_id, agent_id, reuse_session)
+             VALUES (?, ?, 1)",
+        )
+        .bind(room_id)
+        .bind(agent_id)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 

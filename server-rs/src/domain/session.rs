@@ -40,6 +40,8 @@ pub struct StoredAgentSession {
     pub created_at: i64,
     pub last_used_at: Option<i64>,
     pub last_run_id: Option<i64>,
+    /// 该会话已投递到的全局消息 id；新会话为 0。
+    pub last_context_message_id: i64,
 }
 
 impl StoredAgentSession {
@@ -100,6 +102,8 @@ pub struct RunSessionContext {
     pub harness_session_id: Option<String>,
     /// 会话隔离存储目录（绝对路径，由服务层解析）。
     pub storage_dir: String,
+    /// 该会话已投递到的全局消息 id；首次运行为 0。
+    pub last_context_message_id: i64,
 }
 
 #[derive(Debug, Clone)]

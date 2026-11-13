@@ -94,6 +94,7 @@ async fn zcode_real_cli_round_trip_and_resume() {
         Some(RunSessionContext {
             harness_session_id: None,
             storage_dir: storage.to_string_lossy().into_owned(),
+            last_context_message_id: 0,
         }),
     )
     .await;
@@ -108,6 +109,7 @@ async fn zcode_real_cli_round_trip_and_resume() {
         Some(RunSessionContext {
             harness_session_id: Some(session_id.clone()),
             storage_dir: storage.to_string_lossy().into_owned(),
+            last_context_message_id: 0,
         }),
     )
     .await;
@@ -134,6 +136,7 @@ async fn codex_real_cli_round_trip_and_resume() {
         Some(RunSessionContext {
             harness_session_id: None,
             storage_dir: storage.to_string_lossy().into_owned(),
+            last_context_message_id: 0,
         }),
     )
     .await;
@@ -148,6 +151,7 @@ async fn codex_real_cli_round_trip_and_resume() {
         Some(RunSessionContext {
             harness_session_id: Some(session_id.clone()),
             storage_dir: storage.to_string_lossy().into_owned(),
+            last_context_message_id: 0,
         }),
     )
     .await;

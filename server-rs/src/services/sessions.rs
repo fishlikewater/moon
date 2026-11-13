@@ -204,8 +204,29 @@ impl SessionService {
             context: RunSessionContext {
                 harness_session_id: current.harness_session_id,
                 storage_dir: storage_dir.to_string_lossy().into_owned(),
+                last_context_message_id: current.last_context_message_id,
             },
         }))
+    }
+
+    /// 只读读取当前 active 会话；供上下文预览使用，不创建会话。
+    pub async fn active_session(
+        &self,
+        room_id: i64,
+        agent_id: i64,
+    ) -> AppResult<Option<StoredAgentSession>> {
+        self.sessions.get_active(room_id, agent_id).await
+    }
+
+    /// 运行成功后提交上下文水位。
+    pub async fn advance_context_watermark(
+        &self,
+        session_id: i64,
+        message_id: i64,
+    ) -> AppResult<()> {
+        self.sessions
+            .advance_context_watermark(session_id, message_id)
+            .await
     }
 
     /// 只读判断：该成员开启复用且已有可续接的 harness 会话。

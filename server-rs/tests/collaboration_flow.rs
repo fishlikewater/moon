@@ -12,8 +12,11 @@ use common::{builtin_moderator_id, create_agent, delete, get, post, setup_with_a
 use futures_util::StreamExt;
 use moon_server::adapters::{AdapterFactory, EventStream, HarnessAdapter};
 use moon_server::domain::agent::{Agent, HarnessKind};
+use moon_server::domain::message::MessageSenderType;
 use moon_server::domain::run_event::{RunEvent, RunInput};
 use moon_server::error::AppError;
+use moon_server::store::messages::AppendMessageInput;
+use moon_server::store::MessageStore;
 use moon_server::{build_app, AppState};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
@@ -247,6 +250,16 @@ async fn reviews_completed_round_and_continues_to_next() {
     ));
     let (app, room_id, a_id, b_id) = prepare(behavior.clone()).await;
     let moderator_id = behavior.ids.lock().unwrap().moderator;
+    // 轮次评审使用 skip_room_context，房间闲聊不得双注入。
+    MessageStore::new(app.state.db.clone())
+        .append(AppendMessageInput::final_message(
+            room_id,
+            MessageSenderType::User,
+            None,
+            "房间闲聊不应进入轮次评审",
+        ))
+        .await
+        .unwrap();
 
     let (address, server) = start_server(app.state.clone()).await;
     let (mut socket, _) = tokio_tungstenite::connect_async(format!(
@@ -305,6 +318,20 @@ async fn reviews_completed_round_and_continues_to_next() {
     assert!(prompts[3].1.contains("moon-round-review"));
     assert!(prompts[3].1.contains("完成 A 的工作"));
     assert!(prompts[3].1.contains("第 1/3 轮"));
+    for index in [3, 6] {
+        assert!(
+            !prompts[index]
+                .1
+                .contains("房间闲聊不应进入轮次评审"),
+            "轮次评审不应注入房间历史：{}",
+            prompts[index].1
+        );
+    }
+    assert!(
+        prompts[4].1.contains("主持人概述：第 1 轮汇总"),
+        "第二轮应带上一轮结论：{}",
+        prompts[4].1
+    );
 
     let messages = get(&app, &format!("/api/rooms/{room_id}/messages")).await;
     let messages = messages.body.as_array().unwrap();

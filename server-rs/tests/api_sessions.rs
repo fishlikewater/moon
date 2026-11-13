@@ -35,8 +35,24 @@ async fn session_list_hides_storage_and_tracks_reuse_settings() {
     let members = initial.body["members"].as_array().unwrap();
     assert_eq!(members.len(), 2);
     assert!(members.iter().any(|item| item["agentId"] == builtin_id));
-    assert!(members.iter().all(|item| item["reuseSession"] == false));
+    assert!(members.iter().all(|item| item["reuseSession"] == true));
     assert_eq!(initial.body["sessions"], json!([]));
+
+    let disabled = put(
+        &app,
+        &format!("/api/rooms/{room_id}/members/{agent_id}/session-settings"),
+        json!({ "reuseSession": false }),
+    )
+    .await;
+    assert_eq!(disabled.status, StatusCode::OK);
+    let listed = get(&app, &format!("/api/rooms/{room_id}/sessions")).await;
+    let member = listed.body["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["agentId"] == agent_id)
+        .unwrap();
+    assert_eq!(member["reuseSession"], false);
 
     enable_reuse(&app, room_id, agent_id).await;
     let listed = get(&app, &format!("/api/rooms/{room_id}/sessions")).await;

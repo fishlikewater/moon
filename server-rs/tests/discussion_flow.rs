@@ -15,10 +15,12 @@ use futures_util::StreamExt;
 use moon_server::adapters::{AdapterFactory, EventStream, HarnessAdapter};
 use moon_server::domain::agent::{Agent, HarnessKind};
 use moon_server::domain::discussion::{DiscussionStatus, DiscussionStopReason};
+use moon_server::domain::message::MessageSenderType;
 use moon_server::domain::run_event::{RunEvent, RunInput};
 use moon_server::error::AppError;
 use moon_server::store::discussions::{CreateDiscussionInput, FinishDiscussionInput};
-use moon_server::store::DiscussionStore;
+use moon_server::store::messages::AppendMessageInput;
+use moon_server::store::{DiscussionStore, MessageStore};
 use moon_server::{build_app, AppState};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
@@ -290,6 +292,16 @@ async fn starts_from_chat_strips_protocol_and_completes_on_all_stop() {
     let moderator_id = builtin_moderator_id(&app).await;
     behavior.set_ids(a_id, b_id, moderator_id);
     let room_id = create_discussion_room(&app, &[a_id, b_id], 5).await;
+    // 讨论成员与裁决使用 skip_room_context，房间闲聊不得双注入。
+    MessageStore::new(app.state.db.clone())
+        .append(AppendMessageInput::final_message(
+            room_id,
+            MessageSenderType::User,
+            None,
+            "房间闲聊不应进入讨论",
+        ))
+        .await
+        .unwrap();
 
     let (address, server) = start_server(app.state.clone()).await;
     let (mut socket, _) = tokio_tungstenite::connect_async(format!(
@@ -328,6 +340,12 @@ async fn starts_from_chat_strips_protocol_and_completes_on_all_stop() {
     assert!(prompts[1].1.contains("moon-discussion-turn"));
     assert!(prompts[1].1.contains("是否采用方案 A"));
     assert!(prompts[3].1.contains("moon-discussion-judge"));
+    for (index, (_, prompt)) in prompts.iter().enumerate().skip(1) {
+        assert!(
+            !prompt.contains("房间闲聊不应进入讨论"),
+            "讨论第 {index} 次运行不应注入房间历史：{prompt}"
+        );
+    }
 
     let messages = room_messages(&app, room_id).await;
     let serialized = serde_json::to_string(&messages).unwrap();
