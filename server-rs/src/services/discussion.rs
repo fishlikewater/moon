@@ -31,7 +31,9 @@ use crate::services::chat::{
     BroadcastFn, ChatService, DiscussionMetadataPatch, FinalizeFn, FinalizedContent,
     RunAgentOptions,
 };
-use crate::services::moderator::{extract_last_block, strip_blocks, CONCISE_REPLY_RULE};
+use crate::services::moderator::{
+    extract_last_block, strip_blocks, CONCISE_REPLY_RULE, MODERATOR_USER_FORMAT_RULE,
+};
 use crate::store::discussions::{CreateDiscussionInput, FinishDiscussionInput};
 use crate::store::{AgentStore, DiscussionStore, MessageStore, RoomStore};
 
@@ -1348,7 +1350,12 @@ fn compose_conclusion_display(
 ) -> String {
     let body = summary.trim();
     let body = body.strip_prefix("结论：").unwrap_or(body);
-    let mut output = format!("讨论结论：{body}");
+    // Markdown 标题必须独立成行，否则会被「讨论结论：」前缀吃掉。
+    let mut output = if body.starts_with('#') {
+        format!("讨论结论：\n\n{body}")
+    } else {
+        format!("讨论结论：{body}")
+    };
     if !consensus.is_empty() {
         output.push_str("\n\n**共识**");
         for item in consensus {
@@ -1625,12 +1632,13 @@ fn discussion_judge_protocol(forced: &str) -> String {
         "- 如果仍存在未被回答的问题，且下一轮可能产生新信息，输出 continue。".to_string(),
         format!("- {forced}"),
         String::new(),
-        "输出格式：先写一句给用户看的简短裁决，再追加一个 ```moon-discussion-judge 代码块：".to_string(),
+        "输出格式：先用 Markdown 写裁决摘要，再追加一个 ```moon-discussion-judge 代码块：".to_string(),
+        MODERATOR_USER_FORMAT_RULE.to_string(),
         "{\"decision\":\"continue|stop\",\"reason\":\"裁决理由\",\"summary\":\"停止时的结论\",\"consensus\":[\"共识\"],\"disagreements\":[\"分歧\"]}".to_string(),
         String::new(),
         "规则：".to_string(),
         "- decision 必须是 continue / stop；reason 必须是非空字符串。".to_string(),
-        "- decision 为 stop 时 summary 必须给出可执行结论：用 Markdown，首句写结论，随后按要点分段；需要列点时每行以 `- ` 开头，不要写成一整段。".to_string(),
+        "- decision 为 stop 时 summary 必须给出可执行结论，使用上述 Markdown 格式；需要列点时每行以 `- ` 开头，不要写成一整段。".to_string(),
         "- consensus / disagreements 是字符串数组，各最多 10 条；没有时传空数组。".to_string(),
         "- 不要编造未在讨论中出现的观点，不要输出思考过程。".to_string(),
     ]
@@ -1811,6 +1819,14 @@ mod tests {
     }
 
     #[test]
+    fn judge_protocol_uses_shared_markdown_rule() {
+        let protocol = discussion_judge_protocol("必须停止");
+        assert!(protocol.contains(MODERATOR_USER_FORMAT_RULE));
+        assert!(protocol.contains("## 结论"));
+        assert!(protocol.contains("moon-discussion-judge"));
+    }
+
+    #[test]
     fn judge_protocol_detects_stop_and_summary() {
         let judge = parse_discussion_judge(
             "裁决\n```moon-discussion-judge\n{\"decision\":\"stop\",\"reason\":\"已收敛\",\"summary\":\"结论：采用方案 A\",\"consensus\":[\"先小流量\"],\"disagreements\":[\"灰度范围待定\"]}\n```",
@@ -1826,6 +1842,15 @@ mod tests {
         let degraded = parse_discussion_judge("没有协议块");
         assert_eq!(degraded.decision, "continue");
         assert!(degraded.notes[0].contains("未输出"));
+
+        let markdown = parse_discussion_judge(
+            "```moon-discussion-judge\n{\"decision\":\"stop\",\"reason\":\"已收敛\",\"summary\":\"## 结论\\n\\n- 采用方案 A\\n\\n## 下一步\\n- 小流量验证\"}\n```",
+        );
+        assert!(
+            markdown.display.starts_with("讨论结论：\n\n## 结论"),
+            "Markdown 标题必须独立成行：{}",
+            markdown.display
+        );
     }
 
     #[test]

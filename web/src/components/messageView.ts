@@ -99,6 +99,14 @@ export function filterMessages(
   });
 }
 
+/** 主持人标识类只用于智能体消息，避免用户/系统消息误挂主持人样式。 */
+export function moderatorMessageClass(
+  senderType: Message["senderType"],
+  isModerator: boolean,
+): string {
+  return senderType === "agent" && isModerator ? " msg-moderator" : "";
+}
+
 /** 秒级耗时：不足一小时显示 mm:ss，超过一小时显示 h:mm:ss。 */
 export function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));

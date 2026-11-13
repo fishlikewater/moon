@@ -5,6 +5,7 @@ import {
   filterMessages,
   formatElapsed,
   groupMessages,
+  moderatorMessageClass,
   shouldCollapse,
 } from "./messageView";
 
@@ -181,5 +182,14 @@ describe("formatElapsed", () => {
     expect(formatElapsed(65_000)).toBe("01:05");
     expect(formatElapsed(3_725_000)).toBe("1:02:05");
     expect(formatElapsed(-1000)).toBe("00:00");
+  });
+});
+
+describe("moderatorMessageClass", () => {
+  it("只给主持人智能体消息加标识类", () => {
+    expect(moderatorMessageClass("agent", true)).toBe(" msg-moderator");
+    expect(moderatorMessageClass("agent", false)).toBe("");
+    expect(moderatorMessageClass("user", true)).toBe("");
+    expect(moderatorMessageClass("system", true)).toBe("");
   });
 });

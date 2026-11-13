@@ -124,7 +124,8 @@ export function summarizeQuote(text: string, limit = QUOTE_LIMIT): string {
 }
 
 const CONCLUSION_PREFIX = "讨论结论：";
-const CONCLUSION_WALL_MIN = 240;
+/** 旧文字墙兜底的最小正文长度；测试用它自证 fixture 确实越过门槛。 */
+export const CONCLUSION_WALL_MIN = 240;
 
 /**
  * 侧栏讨论摘要的纯文本预览：去掉 Markdown 标记并限长。

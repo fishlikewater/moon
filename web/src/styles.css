@@ -3310,6 +3310,50 @@ svg {
   border-left: 3px solid var(--color-primary);
 }
 
+.msg.msg-moderator .markdown-body h2,
+.msg.is-collaboration-summary .markdown-body h2,
+.msg.is-judge .markdown-body h2 {
+  margin-top: 1.35em;
+  padding-bottom: 0.3em;
+  font-size: 1.12em;
+  color: var(--color-primary-strong);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.msg.msg-moderator .markdown-body ul,
+.msg.msg-moderator .markdown-body ol,
+.msg.is-collaboration-summary .markdown-body ul,
+.msg.is-collaboration-summary .markdown-body ol,
+.msg.is-judge .markdown-body ul,
+.msg.is-judge .markdown-body ol {
+  padding-left: 1.35em;
+}
+
+/* 全局 list-style 被重置；主持人 Markdown 列表恢复可见项目符号。 */
+.msg.msg-moderator .markdown-body ul,
+.msg.is-collaboration-summary .markdown-body ul,
+.msg.is-judge .markdown-body ul {
+  list-style: disc;
+}
+
+.msg.msg-moderator .markdown-body ol,
+.msg.is-collaboration-summary .markdown-body ol,
+.msg.is-judge .markdown-body ol {
+  list-style: decimal;
+}
+
+.msg.msg-moderator .markdown-body li,
+.msg.is-collaboration-summary .markdown-body li,
+.msg.is-judge .markdown-body li {
+  margin: 0.35em 0;
+}
+
+.msg.msg-moderator .markdown-body p,
+.msg.is-collaboration-summary .markdown-body p,
+.msg.is-judge .markdown-body p {
+  margin: 0.65em 0;
+}
+
 .msg.is-continuation {
   margin-top: -6px;
 }

@@ -73,6 +73,7 @@ import {
   filterMessages,
   formatElapsed,
   groupMessages,
+  moderatorMessageClass,
   shouldCollapse,
   type MessageFilter,
 } from "../components/messageView";
@@ -478,7 +479,10 @@ const MessageCard = memo(function MessageCard({
   return (
     <article
       id={`message-${message.id}`}
-      className={`msg msg-${message.senderType} msg-${message.status}${
+      className={`msg msg-${message.senderType} msg-${message.status}${moderatorMessageClass(
+        message.senderType,
+        isModerator,
+      )}${
         message.kind === "progress" ? " is-progress" : ""
       }${
         isContinuation ? " is-continuation" : ""

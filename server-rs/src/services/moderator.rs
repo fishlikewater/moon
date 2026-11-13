@@ -35,6 +35,15 @@ pub const MAX_TASK_DESCRIPTION_CHARS: usize = 8_000;
 /// 面向执行型智能体的通用回复约束。
 pub const CONCISE_REPLY_RULE: &str = "回复保持精简：先给结论，通常不超过 800 字，只保留关键证据与下一步；用户明确要求详细报告或完整方案时才展开，并把超出部分写入工作区文件，在回复中给出文件路径。";
 
+/// 主持人面向用户的输出格式：短答纯文本，长答用 Markdown 分节。
+///
+/// 普通聊天、轮次汇总与讨论裁决共用，避免同一房间内出现三种排版规则。
+pub const MODERATOR_USER_FORMAT_RULE: &str = r#"面向用户的回复使用 Markdown：
+- 1–2 句能说清时用纯文本；
+- 超过 2–3 行时先给结论，再用以下标题分节（按需取舍）：## 结论、## 进展、## 风险与待确认、## 下一步；
+- 并列信息用 - 列表，不要写成一整段；
+- 块外说明与 summary 同样适用；不要输出思考过程，不要把协议 JSON 复制到展示文本。"#;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatAssignment {
     pub agent_id: i64,
@@ -538,10 +547,12 @@ pub fn build_moderator_chat_instruction(
         String::new(),
         "输出规则：".to_string(),
         "- 结构化块必须是合法 JSON，且最多出现一个；同时出现时按 任务 > 讨论 > 委派 处理；".to_string(),
-        "- 块外可以写一段给用户看的简短说明，但不要复述块内容；".to_string(),
+        "- 块外可以写一段给用户看的说明，但不要复述块内容；".to_string(),
         "- 房间没有其他成员时只能直接回答；".to_string(),
         "- 不要编造成员 id、验收结果或命令输出；".to_string(),
         "- 只输出回复正文，不要输出思考过程。".to_string(),
+        "面向用户的回复格式：".to_string(),
+        MODERATOR_USER_FORMAT_RULE.to_string(),
         format!("- {CONCISE_REPLY_RULE}"),
     ];
     lines.join("\n")
@@ -705,6 +716,9 @@ mod tests {
         assert!(instruction.contains("moon-discussion"));
         assert!(instruction.contains("moon-task"));
         assert!(instruction.contains("moon-delegation"));
+        assert!(instruction.contains(MODERATOR_USER_FORMAT_RULE));
+        assert!(instruction.contains("## 结论"));
+        assert!(instruction.contains("## 下一步"));
         assert!(!instruction.contains("modelConfig"));
         assert_eq!(DEFAULT_DISCUSSION_ROUNDS, 3);
     }
@@ -754,6 +768,19 @@ mod tests {
         assert!(instruction.contains("更早"), "{instruction}");
         assert!(instruction.contains("第9条历史内容"));
         assert!(!instruction.contains("第0条历史内容"));
+    }
+
+    #[test]
+    fn extract_moderator_action_preserves_markdown_formatting() {
+        let moderator = agent(1, "主持人", Some(BuiltinAgentRole::Moderator));
+        let members = vec![moderator.clone(), agent(2, "成员", None)];
+        let raw = "## 结论\n\n- 采用方案 A\n- 先做小流量验证\n\n```moon-delegation\n{\"summary\":\"安排\",\"assignments\":[{\"agentId\":2,\"instruction\":\"验证\"}]}\n```";
+        let extraction = extract_moderator_action(raw, &moderator, &members);
+        assert_eq!(
+            extraction.text,
+            "## 结论\n\n- 采用方案 A\n- 先做小流量验证"
+        );
+        assert!(!extraction.text.contains("moon-delegation"));
     }
 }
 
