@@ -1,6 +1,6 @@
 {
   "name": "@moon/shared",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Moon 前后端共享契约类型（唯一类型来源）",
   "license": "Apache-2.0",
