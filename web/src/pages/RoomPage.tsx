@@ -1000,6 +1000,8 @@ export default function RoomPage() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const cleanupInputRef = useRef<HTMLInputElement | null>(null);
   const sideCloseRef = useRef<HTMLButtonElement | null>(null);
+  const sideToggleRef = useRef<HTMLButtonElement | null>(null);
+  const sidebarWasOpenRef = useRef(false);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentKeyRef = useRef(0);
   const pendingAttachmentsRef = useRef<PendingAttachment[]>([]);
@@ -1068,19 +1070,23 @@ export default function RoomPage() {
     return () => setChrome(null);
   }, [room, roomId, setChrome]);
 
-  // 侧栏默认收起；打开时把焦点移入浮层，Esc 关闭。
+  // 侧栏默认收起；打开时把焦点移入浮层，关闭时还给 rail 开关按钮，Esc 关闭。
   useEffect(() => {
-    if (!sidebarOpen) {
-      return;
+    if (sidebarOpen) {
+      sidebarWasOpenRef.current = true;
+      sideCloseRef.current?.focus();
+      const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+        if (event.key === "Escape") {
+          setSidebarOpen(false);
+        }
+      };
+      window.addEventListener("keydown", closeOnEscape);
+      return () => window.removeEventListener("keydown", closeOnEscape);
     }
-    sideCloseRef.current?.focus();
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setSidebarOpen(false);
-      }
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
+    if (sidebarWasOpenRef.current) {
+      sidebarWasOpenRef.current = false;
+      sideToggleRef.current?.focus();
+    }
   }, [sidebarOpen]);
 
   useEffect(() => {
@@ -2224,6 +2230,7 @@ export default function RoomPage() {
               <TrashIcon />
             </button>
             <button
+              ref={sideToggleRef}
               type="button"
               className="room-rail-button"
               title={sidebarOpen ? "收起侧栏" : "展开侧栏"}

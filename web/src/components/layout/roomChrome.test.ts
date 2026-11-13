@@ -63,5 +63,6 @@ describe("buildRoomChrome", () => {
         }),
         13,
       )?.meta,
-    ).toBe("E:\\Projects\\moon · 另有 1 个目录");  });
+    ).toBe("E:\\Projects\\moon · 另有 1 个目录");
+  });
 });
