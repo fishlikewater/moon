@@ -55,10 +55,10 @@ impl RoomHistoryService {
         }
     }
 
-    /// 清理房间纯聊天历史。
+    /// 清理房间聊天窗口历史。
     ///
-    /// `keepRecent = 0` 表示删除全部纯聊天消息；否则保留最近 N 条。
-    /// 任务、讨论与委派消息永远不进入删除集合。
+    /// `keepRecent = 0` 表示隐藏当前全部可见历史；否则保留最近 N 条纯聊天可见。
+    /// 纯聊天消息物理删除；任务、讨论与委派消息保留在库中，但旧消息不再出现在聊天窗口。
     pub async fn cleanup(
         &self,
         raw_room_id: &str,
@@ -72,39 +72,76 @@ impl RoomHistoryService {
 
         self.assert_idle(room_id).await?;
 
-        let history = self.messages.list_by_room(room_id).await?;
+        let current_floor = self.rooms.history_start_message_id(room_id).await?;
+        let history = self.messages.list_all_by_room(room_id).await?;
         // 被委派/讨论外键引用的消息即使没有元数据也不能删。
         let protected_ids = self.messages.protected_message_ids(room_id).await?;
         let eligible: Vec<&Message> = history
             .iter()
-            .filter(|message| is_pure_chat_message(message) && !protected_ids.contains(&message.id))
+            .filter(|message| {
+                message.id > current_floor
+                    && is_pure_chat_message(message)
+                    && !protected_ids.contains(&message.id)
+            })
             .collect();
         let keep = usize::try_from(keep_recent)
             .unwrap_or(usize::MAX)
             .min(eligible.len());
-        let deletable = if keep == 0 {
-            eligible
+        // 窗口从保留消息之前开始：keep=0 时清空当前全部可见历史。
+        let floor = if keep == 0 {
+            history
+                .iter()
+                .map(|message| message.id)
+                .max()
+                .unwrap_or(current_floor)
         } else {
-            eligible[..eligible.len() - keep].to_vec()
-        };
-        if deletable.is_empty() {
+            eligible[eligible.len() - keep].id - 1
+        }
+        .max(current_floor);
+        if floor <= current_floor {
             return Ok(MessageCleanupResult {
                 deleted: 0,
+                hidden: 0,
                 artifacts_deleted: 0,
                 attachments_deleted: 0,
             });
         }
 
-        let ids: Vec<i64> = deletable.iter().map(|message| message.id).collect();
-        let attachments = self.attachments.list_for_messages(&ids).await?;
-        let deleted = self.messages.delete_by_ids(&ids).await?;
-        self.attachments.delete_rows_for_messages(&ids).await?;
-        let attachments_deleted = self.attachments.remove_files(&attachments);
-        let artifacts_deleted = self.remove_artifacts(&room.workspace_dir, room_id, &deletable);
+        let deletable: Vec<&Message> = history
+            .iter()
+            .filter(|message| {
+                message.id > current_floor
+                    && message.id <= floor
+                    && is_pure_chat_message(message)
+                    && !protected_ids.contains(&message.id)
+            })
+            .collect();
+        let hidden = history
+            .iter()
+            .filter(|message| message.id > current_floor && message.id <= floor)
+            .count()
+            .saturating_sub(deletable.len()) as u64;
 
+        let mut deleted = 0;
+        let mut artifacts_deleted = 0;
+        let mut attachments_deleted = 0;
+        if !deletable.is_empty() {
+            let ids: Vec<i64> = deletable.iter().map(|message| message.id).collect();
+            let attachments = self.attachments.list_for_messages(&ids).await?;
+            deleted = self.messages.delete_by_ids(&ids).await?;
+            self.attachments.delete_rows_for_messages(&ids).await?;
+            attachments_deleted = self.attachments.remove_files(&attachments);
+            artifacts_deleted = self.remove_artifacts(&room.workspace_dir, room_id, &deletable);
+        }
+
+        // 即使没有可物理删除的消息，也要推进水位隐藏受保护的旧消息。
+        self.rooms
+            .advance_history_start_message_id(room_id, floor)
+            .await?;
         (self.broadcast)(room_id, &RoomEvent::HistoryCleared { room_id });
         Ok(MessageCleanupResult {
             deleted,
+            hidden,
             artifacts_deleted,
             attachments_deleted,
         })

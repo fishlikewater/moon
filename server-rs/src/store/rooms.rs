@@ -110,6 +110,38 @@ impl RoomStore {
         Ok(Some(map_room_row(row, member_ids)?))
     }
 
+    /// 聊天窗口起始消息 id；房间不存在时返回 0。
+    ///
+    /// 该水位只决定聊天窗口可见范围，不影响讨论回放与会话上下文水位。
+    pub async fn history_start_message_id(&self, id: i64) -> AppResult<i64> {
+        let value = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(history_start_message_id, 0) FROM rooms WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(value.unwrap_or(0))
+    }
+
+    /// 只前进不后退地推进聊天窗口水位，返回是否发生变化。
+    pub async fn advance_history_start_message_id(
+        &self,
+        id: i64,
+        floor: i64,
+    ) -> AppResult<bool> {
+        let result = sqlx::query(
+            "UPDATE rooms
+                SET history_start_message_id = MAX(history_start_message_id, ?)
+              WHERE id = ? AND history_start_message_id < ?",
+        )
+        .bind(floor)
+        .bind(id)
+        .bind(floor)
+        .execute(self.pool())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn update(&self, id: i64, patch: UpdateRoomInput) -> AppResult<Option<Room>> {
         let Some(existing) = self.get_by_id(id).await? else {
             return Ok(None);

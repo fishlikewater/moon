@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   BrowserRouter,
+  Link,
   Navigate,
   Route,
   Routes,
@@ -19,6 +20,11 @@ import SessionsPage from "./pages/SessionsPage";
 import SettingsPage from "./pages/SettingsPage";
 import TasksPage from "./pages/TasksPage";
 import { AppSidebar } from "./components/layout/AppSidebar";
+import {
+  RoomChromeProvider,
+  resolveTopbarTitle,
+  useRoomChrome,
+} from "./components/layout/roomChrome";
 import { CommandPalette } from "./components/CommandPaletteDialog";
 import UpdateBanner from "./components/UpdateBanner";
 import {
@@ -87,6 +93,24 @@ function MenuIcon() {
       <path d="M4 7h16" />
       <path d="M4 12h16" />
       <path d="M4 17h16" />
+    </svg>
+  );
+}
+
+/** 顶栏返回图标。 */
+function BackIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M14.5 5 8 12l6.5 7" />
     </svg>
   );
 }
@@ -328,6 +352,7 @@ function AppShell() {
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const summary = useNavSummary(location.pathname);
   const section = activeSection(location.pathname);
+  const { chrome } = useRoomChrome();
 
   // 路由变化或回到桌面宽度时收起抽屉。
   useEffect(() => {
@@ -440,7 +465,30 @@ function AppShell() {
                 <MenuIcon />
               </button>
             )}
-            <span className="app-topbar-title">{sectionLabel(section)}</span>
+            {chrome !== null && (
+              <Link
+                className="app-topbar-back"
+                to={chrome.backTo}
+                aria-label={chrome.backLabel}
+                title={chrome.backLabel}
+              >
+                <BackIcon />
+              </Link>
+            )}
+            <span
+              className={
+                chrome !== null
+                  ? "app-topbar-title is-room"
+                  : "app-topbar-title"
+              }
+            >
+              {resolveTopbarTitle(chrome, sectionLabel(section))}
+            </span>
+            {chrome?.meta !== undefined && chrome.meta !== "" && (
+              <span className="app-topbar-meta" title={chrome.meta}>
+                {chrome.meta}
+              </span>
+            )}
           </div>
 
           <div className="app-header-actions">
@@ -501,7 +549,9 @@ function AppShell() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AppShell />
+      <RoomChromeProvider>
+        <AppShell />
+      </RoomChromeProvider>
     </BrowserRouter>
   );
 }

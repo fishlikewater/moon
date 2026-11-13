@@ -52,33 +52,63 @@ describe("isPureChatMessage", () => {
 });
 
 describe("cleanupPreview", () => {
-  it("0 表示清理全部纯聊天消息", () => {
+  it("0 表示清理全部聊天窗口历史，受保护消息计入隐藏", () => {
     const messages = [
-      makeMessage(),
-      makeMessage({ taskId: 1 }),
-      makeMessage(),
+      makeMessage({ id: 1 }),
+      makeMessage({ id: 2, taskId: 1 }),
+      makeMessage({ id: 3 }),
     ];
     expect(cleanupPreview(messages, 0)).toEqual({
       eligible: 2,
       deleting: 2,
       keeping: 0,
+      hidden: 1,
     });
   });
 
   it("keepRecent 只保留最近 N 条纯聊天消息", () => {
-    const messages = [makeMessage(), makeMessage(), makeMessage({ taskId: 1 })];
+    const messages = [
+      makeMessage({ id: 1 }),
+      makeMessage({ id: 2, taskId: 1 }),
+      makeMessage({ id: 3 }),
+    ];
     expect(cleanupPreview(messages, 1)).toEqual({
       eligible: 2,
       deleting: 1,
       keeping: 1,
+      hidden: 1,
     });
   });
 
-  it("保留数超过总数时不删除", () => {
-    expect(cleanupPreview([makeMessage()], 10)).toEqual({
+  it("没有纯聊天时只有隐藏计数，按钮仍可执行清理", () => {
+    const messages = [
+      makeMessage({ id: 1, taskId: 3 }),
+      makeMessage({
+        id: 2,
+        discussion: {
+          discussionId: 1,
+          round: 1,
+          stance: null,
+          replyToMessageId: null,
+          stopVote: null,
+          stopReason: null,
+        },
+      }),
+    ];
+    expect(cleanupPreview(messages, 0)).toEqual({
+      eligible: 0,
+      deleting: 0,
+      keeping: 0,
+      hidden: 2,
+    });
+  });
+
+  it("保留数超过总数时不删除也不隐藏", () => {
+    expect(cleanupPreview([makeMessage({ id: 1 })], 10)).toEqual({
       eligible: 1,
       deleting: 0,
       keeping: 1,
+      hidden: 0,
     });
   });
 });

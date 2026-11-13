@@ -1,7 +1,7 @@
 //! 消息路由：发送返回 202，智能体回复经 WebSocket 推送。
 //!
-//! `POST /api/rooms/{id}/messages/cleanup` 同步清理纯聊天历史，
-//! 返回实际删除计数；任务/讨论/委派消息永不进入删除集合。
+//! `POST /api/rooms/{id}/messages/cleanup` 同步清理聊天窗口历史，
+//! 返回物理删除数与窗口隐藏数；任务/讨论/委派消息行保留在库中。
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};

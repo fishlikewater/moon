@@ -533,17 +533,14 @@ async fn cleanup_removes_attachment_rows_and_files_only_for_chat_messages() {
     assert_eq!(remaining_id, task_attachment_id);
 
     let messages = get(&app, &format!("/api/rooms/{room_id}/messages")).await;
-    let ids: Vec<i64> = messages
-        .body
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|message| message["id"].as_i64().unwrap())
-        .collect();
-    assert_eq!(ids, vec![task_message.id]);
+    assert!(
+        messages.body.as_array().unwrap().is_empty(),
+        "清理后任务消息也应从聊天窗口隐藏"
+    );
+    let stored = store.get_by_id(task_message.id).await.unwrap().unwrap();
     assert_eq!(
-        messages.body[0]["attachments"][0]["id"], task_attachment_id,
-        "任务消息仍应返回其附件"
+        stored.attachments[0].id, task_attachment_id,
+        "任务消息仍应保留其附件"
     );
 }
 

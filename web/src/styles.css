@@ -470,6 +470,48 @@ svg {
   white-space: nowrap;
 }
 
+.app-topbar-title.is-room {
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.app-topbar-back {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  border-radius: 8px;
+}
+
+.app-topbar-back:hover {
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+}
+
+.app-topbar-back svg {
+  width: 18px;
+  height: 18px;
+}
+
+.app-topbar-meta {
+  overflow: hidden;
+  max-width: 42ch;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1099px) {
+  .app-topbar-meta {
+    display: none;
+  }
+}
+
 .app-menu-button {
   display: grid;
   flex: none;
@@ -2305,41 +2347,12 @@ svg {
 }
 
 /* ===== 聊天页 ===== */
+/* 顶栏已承载房间名与返回；页内只保留聊天主体，最大化垂直空间。 */
 .room-page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  min-width: 0;
-}
-
-.room-head-main {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.room-head-main h1 {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.room-head {
-  align-items: center;
-  flex-wrap: nowrap;
-}
-
-.room-head-actions {
-  display: flex;
-  flex: none;
-  align-items: center;
   gap: var(--space-2);
-  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .room-side-backdrop {
@@ -2352,28 +2365,22 @@ svg {
   cursor: default;
 }
 
-/* 聊天优先：主区占满剩余宽度，右侧栏收纳设置与实时状态。 */
+/* 聊天优先：侧栏是覆盖层，任何宽度下都不挤压聊天区。 */
 .room-layout {
-  display: grid;
+  display: flex;
   flex: 1;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: var(--space-4);
-  align-items: stretch;
+  min-width: 0;
   min-height: 0;
 }
 
-.room-layout:not(.side-open) {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.room-layout:not(.side-open) .room-side {
-  display: none;
-}
-
 .room-main {
+  position: relative;
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
+  /* 右侧留出操作栏空白，竖排按钮不覆盖聊天面板。 */
+  padding-right: 52px;
   min-width: 0;
   min-height: 0;
 }
@@ -2386,14 +2393,78 @@ svg {
   max-width: none;
 }
 
-.room-side {
+/* 右侧竖排操作：位于聊天面板外的右侧空白，不遮挡消息。 */
+.room-rail {
+  position: absolute;
+  top: 10px;
+  right: 0;
+  z-index: 6;
   display: flex;
   flex-direction: column;
+  gap: 8px;
+}
+
+.room-rail-button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--color-text-secondary);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+}
+
+.room-rail-button:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+.room-rail-button:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
+}
+
+.room-rail-button.is-danger:hover {
+  color: var(--color-danger);
+  border-color: var(--color-danger-border);
+}
+
+.room-rail-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.room-side {
+  position: fixed;
+  top: 52px;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  display: flex;
+  width: min(336px, 88vw);
+  flex-direction: column;
   gap: 10px;
-  min-width: 0;
-  height: 100%;
+  padding: 14px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
+  box-shadow: var(--shadow-drawer-narrow);
+  transform: translateX(102%);
+  visibility: hidden;
+  pointer-events: none;
+  transition: transform var(--duration-fast) var(--ease);
+}
+
+.room-layout.side-open .room-side {
+  visibility: visible;
+  transform: translateX(0);
+  pointer-events: auto;
 }
 
 .room-side-section {
@@ -2407,9 +2478,9 @@ svg {
   box-shadow: var(--shadow-card);
 }
 
-/* 移动端抽屉内的关闭入口；桌面侧栏不需要。 */
+/* 浮层抽屉的关闭入口始终可用。 */
 .room-side-top {
-  display: none;
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -2809,10 +2880,6 @@ svg {
   justify-content: flex-start;
 }
 
-.room-side-toggle {
-  white-space: nowrap;
-}
-
 .room-meta-bar {
   display: flex;
   align-items: center;
@@ -3126,23 +3193,46 @@ svg {
 
 .jump-latest {
   position: absolute;
-  right: 20px;
   bottom: 118px;
+  left: 50%;
   z-index: 5;
-  padding: 8px 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 38px;
+  height: 38px;
+  padding: 0 8px;
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 700;
   color: var(--color-text-on-primary);
   background: var(--color-primary-strong);
   border: 0;
   border-radius: 999px;
   box-shadow: var(--shadow-float);
   cursor: pointer;
+  transform: translateX(-50%);
 }
 
 .jump-latest:hover {
   background: var(--color-primary-strong);
+}
+
+.jump-latest svg {
+  width: 18px;
+  height: 18px;
+}
+
+.jump-latest-count {
+  min-width: 16px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  background: var(--color-surface);
+  color: var(--color-primary-deep);
+  border-radius: 999px;
 }
 
 .message-list {
@@ -3609,33 +3699,30 @@ svg {
 
 .composer textarea {
   width: 100%;
-  min-height: 52px;
-  padding: 8px 10px;
+  min-height: 44px;
+  max-height: 180px;
+  padding: 11px 0;
   font: inherit;
   font-size: 14px;
   line-height: 1.55;
   color: var(--color-text);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  resize: vertical;
-  transition: border-color var(--duration-fast) var(--ease),
-    box-shadow var(--duration-fast) var(--ease);
-}
-
-.composer textarea:hover:not(:disabled) {
-  border-color: var(--color-border-strong);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  resize: none;
+  /* 多行输入随内容增高，超过上限后内部滚动（Chromium 渐进增强）。 */
+  field-sizing: content;
 }
 
 .composer textarea:focus-visible {
   outline: none;
-  border-color: var(--color-primary);
-  box-shadow: var(--focus-ring);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .composer textarea:disabled {
   color: var(--color-text-muted);
-  background: var(--color-surface-muted);
+  background: transparent;
   cursor: not-allowed;
 }
 
@@ -3644,11 +3731,7 @@ svg {
 }
 
 .composer-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  flex-wrap: wrap;
+  display: block;
 }
 
 .composer-hint {
@@ -3656,10 +3739,6 @@ svg {
   min-width: 0;
   color: var(--color-text-muted);
   font-size: 12px;
-}
-
-.composer-actions .btn-primary {
-  flex: none;
 }
 
 /* ===== 任务列表 ===== */
@@ -4341,10 +4420,6 @@ svg {
     font-size: 22px;
   }
 
-  .room-head-main h1 {
-    font-size: 21px;
-  }
-
   .chat-panel {
     padding: 10px;
     border-radius: 14px;
@@ -4423,15 +4498,6 @@ svg {
   .composer-hint {
     width: 100%;
     font-size: 11.5px;
-  }
-
-  .composer-actions {
-    gap: var(--space-2);
-  }
-
-  .composer-actions .btn-primary {
-    min-width: 88px;
-    margin-left: auto;
   }
 }
 
@@ -4880,8 +4946,98 @@ svg {
   background: var(--color-primary-soft);
 }
 
+/* ZCode 风格输入框：附件、文本与发送按钮都在同一圆角边框内。 */
 .composer-input {
   position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 4px 4px 4px 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  transition: border-color var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease);
+}
+
+.composer-input:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
+}
+
+.composer-input textarea {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 附件入口在输入框内部左侧。 */
+.composer-attach {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 6px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.composer-attach:hover:not(:disabled) {
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+}
+
+.composer-attach:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.composer-attach:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.composer-attach svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* 发送按钮在输入框内部右下角。 */
+.composer-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 5px;
+  color: var(--color-text-on-primary);
+  background: var(--color-primary-strong);
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.composer-send:hover:not(:disabled) {
+  background: var(--color-primary);
+}
+
+.composer-send:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.composer-send:disabled {
+  color: var(--color-text-muted);
+  background: var(--color-surface-muted);
+  cursor: not-allowed;
+}
+
+.composer-send svg {
+  width: 18px;
+  height: 18px;
 }
 
 .completion-menu {
@@ -4995,11 +5151,6 @@ svg {
 @media (max-width: 560px) {
   .completion-menu {
     max-height: 200px;
-  }
-
-  .room-head-actions .badge,
-  .room-head-actions .muted {
-    font-size: 11.5px;
   }
 }
 
@@ -6044,51 +6195,8 @@ details.run-activity-detail pre {
 }
 
 /* ===== 房间侧栏响应式 ===== */
-@media (max-width: 1199px) {
-  .room-layout {
-    grid-template-columns: minmax(0, 1fr) 288px;
-  }
-}
-
-/* 桌面窗口最小宽度 1100：低于此宽度才退化为抽屉。 */
+/* 侧栏在任何宽度下都是覆盖浮层，桌面与窄屏只差浮层内部排布。 */
 @media (max-width: 1099px) {
-  .room-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .room-side {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 40;
-    width: min(336px, 88vw);
-    max-height: none;
-    padding: 14px;
-    background: var(--color-surface);
-    border-left: 1px solid var(--color-border);
-    box-shadow: var(--shadow-drawer-narrow);
-    transform: translateX(102%);
-    transition: transform var(--duration-fast) var(--ease);
-  }
-
-  .room-side-top {
-    display: flex;
-  }
-
-  .room-layout:not(.side-open) .room-side {
-    display: flex;
-    visibility: hidden;
-    transform: translateX(102%);
-    pointer-events: none;
-  }
-
-  .room-layout.side-open .room-side {
-    visibility: visible;
-    transform: translateX(0);
-    pointer-events: auto;
-  }
-
   .room-side .live-run-list {
     flex-direction: row;
     flex-wrap: wrap;
@@ -6102,15 +6210,6 @@ details.run-activity-detail pre {
 @media (max-width: 560px) {
   .msg.is-progress {
     max-width: 100%;
-  }
-
-  .room-head {
-    flex-wrap: wrap;
-    row-gap: var(--space-2);
-  }
-
-  .room-head-actions {
-    width: 100%;
   }
 }
 

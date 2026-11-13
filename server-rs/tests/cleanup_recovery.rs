@@ -4,12 +4,17 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{create_agent, create_room, get, patch, post, setup, workspace};
-use moon_server::domain::message::{MessageKind, MessageSenderType, MessageStatus};
+use moon_server::domain::discussion::{DiscussionStatus, DiscussionStopReason};
+use moon_server::domain::message::{
+    MessageDiscussion, MessageKind, MessageSenderType, MessageStatus,
+};
 use moon_server::services::message_artifacts::archive_path;
 use moon_server::services::recovery::{
     recover_interrupted, RecoveryResult, RECOVERY_DISCUSSION_MESSAGE, RECOVERY_SYSTEM_MESSAGE,
 };
-use moon_server::store::discussions::CreateDiscussionInput;
+use moon_server::store::discussions::{
+    CreateDiscussionInput, FinishDiscussionInput,
+};
 use moon_server::store::messages::AppendMessageInput;
 use moon_server::store::runs::CreateRunInput;
 use moon_server::store::{DiscussionStore, MessageStore, RunStore};
@@ -91,6 +96,7 @@ async fn cleanup_keeps_recent_pure_chat_and_removes_artifacts() {
     .await;
     assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
     assert_eq!(response.body["deleted"], 2);
+    assert_eq!(response.body["hidden"], 0);
     assert_eq!(response.body["artifactsDeleted"], 1);
     assert!(!artifact.exists(), "归档文件应随消息删除");
 
@@ -133,8 +139,15 @@ async fn cleanup_protects_referenced_messages_and_validates_input() {
     .await;
     assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
     assert_eq!(response.body["deleted"], 1);
+    assert_eq!(response.body["hidden"], 1);
+    // 受保护行不能在物理删除集合里；它只是因为聊天窗口水位而不可见。
     let remaining = message_ids(&app, room_id).await;
-    assert_eq!(remaining, vec![referenced]);
+    assert_eq!(remaining, vec![referenced], "受保护行仍应保留在库中");
+    let visible = get(&app, &format!("/api/rooms/{room_id}/messages")).await;
+    assert!(
+        visible.body.as_array().unwrap().is_empty(),
+        "聊天窗口不应再显示清理前的消息"
+    );
 
     let negative = post(
         &app,
@@ -169,6 +182,240 @@ async fn cleanup_protects_referenced_messages_and_validates_input() {
     assert_eq!(missing_room.status, StatusCode::NOT_FOUND);
 
     let _ = ordinary;
+}
+
+async fn append_discussion_message(
+    app: &common::TestApp,
+    room_id: i64,
+    agent_id: i64,
+    discussion_id: i64,
+    content: &str,
+) -> i64 {
+    let store = MessageStore::new(app.state.db.clone());
+    store
+        .append(AppendMessageInput {
+            room_id,
+            sender_type: MessageSenderType::Agent,
+            sender_agent_id: Some(agent_id),
+            content: content.to_string(),
+            status: MessageStatus::Final,
+            kind: MessageKind::Reply,
+            run_id: None,
+            task_id: None,
+            reply_to_message_id: None,
+            discussion: Some(MessageDiscussion {
+                discussion_id,
+                round: 1,
+                stance: None,
+                reply_to_message_id: None,
+                stop_vote: None,
+                stop_reason: None,
+            }),
+            collaboration: None,
+        })
+        .await
+        .unwrap()
+        .id
+}
+
+#[tokio::test]
+async fn cleanup_hides_protected_discussion_messages_but_keeps_replay() {
+    let app = setup().await;
+    let agent = create_agent(&app, "讨论清理助手").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "讨论清理房间", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+
+    let discussions = DiscussionStore::new(app.state.db.clone());
+    let discussion = discussions
+        .create(CreateDiscussionInput {
+            room_id,
+            topic: "清理边界".to_string(),
+            max_rounds: 1,
+            participant_ids: vec![agent_id],
+            created_by_agent_id: None,
+        })
+        .await
+        .unwrap();
+    discussions
+        .finish(
+            discussion.id,
+            FinishDiscussionInput {
+                status: DiscussionStatus::Failed,
+                stop_reason: DiscussionStopReason::ParticipantFailed,
+                summary: None,
+            },
+        )
+        .await
+        .unwrap();
+    append_message(&app, room_id, agent_id, "清理前聊天", None).await;
+    let discussion_message =
+        append_discussion_message(&app, room_id, agent_id, discussion.id, "讨论发言").await;
+
+    let response = post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages/cleanup"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
+    assert_eq!(response.body["deleted"], 1);
+    assert_eq!(response.body["hidden"], 1);
+
+    let visible = get(&app, &format!("/api/rooms/{room_id}/messages")).await;
+    assert!(
+        visible.body.as_array().unwrap().is_empty(),
+        "讨论消息不应再出现在聊天窗口"
+    );
+    let replay = MessageStore::new(app.state.db.clone())
+        .list_by_discussion(discussion.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        replay.iter().map(|message| message.id).collect::<Vec<_>>(),
+        vec![discussion_message],
+        "讨论回放仍应读到受保护消息"
+    );
+
+    // 清理只推进窗口；新消息 id 大于水位，必须重新可见。
+    append_message(&app, room_id, agent_id, "清理后新消息", None).await;
+    let after = get(&app, &format!("/api/rooms/{room_id}/messages")).await;
+    assert_eq!(after.body.as_array().unwrap().len(), 1);
+
+    // 再次清理只删除新消息，不重复统计已隐藏的讨论消息。
+    let again = post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages/cleanup"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(again.body["deleted"], 1);
+    assert_eq!(again.body["hidden"], 0);
+}
+
+#[tokio::test]
+async fn cleanup_with_only_protected_messages_still_clears_window() {
+    let app = setup().await;
+    let agent = create_agent(&app, "仅讨论清理").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "仅讨论房间", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+
+    let discussions = DiscussionStore::new(app.state.db.clone());
+    let discussion = discussions
+        .create(CreateDiscussionInput {
+            room_id,
+            topic: "只有讨论消息".to_string(),
+            max_rounds: 1,
+            participant_ids: vec![agent_id],
+            created_by_agent_id: None,
+        })
+        .await
+        .unwrap();
+    discussions
+        .finish(
+            discussion.id,
+            FinishDiscussionInput {
+                status: DiscussionStatus::Failed,
+                stop_reason: DiscussionStopReason::ParticipantFailed,
+                summary: None,
+            },
+        )
+        .await
+        .unwrap();
+    append_discussion_message(&app, room_id, agent_id, discussion.id, "唯一的讨论消息").await;
+
+    let response = post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages/cleanup"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
+    assert_eq!(response.body["deleted"], 0, "没有可物理删除的纯聊天");
+    assert_eq!(response.body["hidden"], 1, "受保护消息应计入隐藏");
+
+    let visible = get(&app, &format!("/api/rooms/{room_id}/messages")).await;
+    assert!(
+        visible.body.as_array().unwrap().is_empty(),
+        "只有受保护消息时也必须清空聊天窗口"
+    );
+    let replay = MessageStore::new(app.state.db.clone())
+        .list_by_discussion(discussion.id)
+        .await
+        .unwrap();
+    assert_eq!(replay.len(), 1, "讨论消息仍保留在库中");
+
+    // 会话增量同样不能把已隐藏消息重新注入上下文。
+    let store = MessageStore::new(app.state.db.clone());
+    let max_id = store.max_id(room_id).await.unwrap();
+    let incremental = store.list_after_id(room_id, 0, max_id).await.unwrap();
+    assert!(
+        incremental.is_empty(),
+        "清理后的会话增量不应包含窗口外消息"
+    );
+}
+
+#[tokio::test]
+async fn cleanup_window_uses_message_id_when_seq_reuses() {
+    let app = setup().await;
+    let agent = create_agent(&app, "seq 复用清理").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "seq 复用房间", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+
+    let discussions = DiscussionStore::new(app.state.db.clone());
+    let discussion = discussions
+        .create(CreateDiscussionInput {
+            room_id,
+            topic: "seq 复用讨论".to_string(),
+            max_rounds: 1,
+            participant_ids: vec![agent_id],
+            created_by_agent_id: None,
+        })
+        .await
+        .unwrap();
+    discussions
+        .finish(
+            discussion.id,
+            FinishDiscussionInput {
+                status: DiscussionStatus::Failed,
+                stop_reason: DiscussionStopReason::ParticipantFailed,
+                summary: None,
+            },
+        )
+        .await
+        .unwrap();
+    // 讨论消息 seq=1（受保护），纯聊天 seq=2 是最高 seq。
+    append_discussion_message(&app, room_id, agent_id, discussion.id, "讨论 seq 1").await;
+    append_message(&app, room_id, agent_id, "聊天 seq 2", None).await;
+
+    let response = post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages/cleanup"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.body["deleted"], 1);
+    assert_eq!(response.body["hidden"], 1);
+
+    // 删除最高 seq 后，新消息的 seq 会复用 2；可见性必须按 id 判断。
+    let new_message = append_message(&app, room_id, agent_id, "seq 复用后的新消息", None).await;
+    let seq: i64 = sqlx::query_scalar("SELECT seq FROM messages WHERE id = ?")
+        .bind(new_message)
+        .fetch_one(app.state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(seq, 2, "前提：新消息复用了被删除的最高 seq");
+    let visible = get(&app, &format!("/api/rooms/{room_id}/messages")).await;
+    let ids: Vec<i64> = visible
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, vec![new_message], "id 水位之后的新消息必须可见");
 }
 
 #[tokio::test]

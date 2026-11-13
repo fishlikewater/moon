@@ -11,7 +11,7 @@ use sqlx::{Row, SqlitePool, Transaction};
 
 use crate::error::AppResult;
 
-pub const LATEST_VERSION: i64 = 21;
+pub const LATEST_VERSION: i64 = 22;
 
 enum Step {
     /// 一段可包含多条语句的 DDL/DML。
@@ -307,6 +307,14 @@ const MIGRATIONS: &[Migration] = &[
             },
             Step::Sql(V21_CONTEXT_WATERMARK),
         ],
+    },
+    Migration {
+        version: 22,
+        steps: &[Step::AddColumn {
+            table: "rooms",
+            column: "history_start_message_id",
+            definition: "INTEGER NOT NULL DEFAULT 0",
+        }],
     },
 ];
 

@@ -168,8 +168,24 @@ impl MessageStore {
         Ok(self.hydrate(vec![message]).await?.pop())
     }
 
-    /// 房间消息按 seq 升序，即讨论的原始顺序。
+    /// 房间消息按 seq 升序，即讨论的原始顺序；只返回聊天窗口水位之后的消息。
     pub async fn list_by_room(&self, room_id: i64) -> AppResult<Vec<Message>> {
+        let rows = sqlx::query_as::<_, MessageRow>(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages
+              WHERE room_id = ?
+                AND id > COALESCE(
+                      (SELECT history_start_message_id FROM rooms WHERE id = ?), 0)
+              ORDER BY seq"
+        ))
+        .bind(room_id)
+        .bind(room_id)
+        .fetch_all(self.pool())
+        .await?;
+        self.hydrate_rows(rows).await
+    }
+
+    /// 房间全部消息（不过滤聊天窗口水位）；清理与内部回放使用。
+    pub async fn list_all_by_room(&self, room_id: i64) -> AppResult<Vec<Message>> {
         let rows = sqlx::query_as::<_, MessageRow>(&format!(
             "SELECT {MESSAGE_COLUMNS} FROM messages WHERE room_id = ? ORDER BY seq"
         ))
@@ -192,7 +208,8 @@ impl MessageStore {
 
     /// 取水位之后、快照上界之前的消息，按全局 id 升序。
     ///
-    /// 清理历史后 `seq` 可能回退或复用，因此增量只认 `id`。
+    /// 清理历史后 `seq` 可能回退或复用，因此增量只认 `id`；
+    /// 聊天窗口水位之后的消息才进入会话上下文。
     pub async fn list_after_id(
         &self,
         room_id: i64,
@@ -205,11 +222,14 @@ impl MessageStore {
         let rows = sqlx::query_as::<_, MessageRow>(&format!(
             "SELECT {MESSAGE_COLUMNS} FROM messages
               WHERE room_id = ? AND id > ? AND id <= ?
+                AND id > COALESCE(
+                      (SELECT history_start_message_id FROM rooms WHERE id = ?), 0)
               ORDER BY id"
         ))
         .bind(room_id)
         .bind(after_id)
         .bind(up_to_id)
+        .bind(room_id)
         .fetch_all(self.pool())
         .await?;
         self.hydrate_rows(rows).await

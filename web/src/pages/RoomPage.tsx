@@ -67,7 +67,7 @@ import {
   summarizeReply,
 } from "../components/messageInteractions";
 import SessionPanel from "../components/SessionPanel";
-import { PageHeader } from "../components/layout/PageHeader";
+import { buildRoomChrome, useRoomChrome } from "../components/layout/roomChrome";
 import {
   extractHeadings,
   filterMessages,
@@ -106,9 +106,140 @@ import {
   cleanupPreview,
   parseKeepRecent,
 } from "./roomCleanup";
+import { formatCleanupResult } from "./roomCleanupResult";
 
 // Markdown 依赖体积较大；按需加载，避免拖慢房间页首屏与主 chunk。
 const MarkdownContent = lazy(() => import("../components/MarkdownContent"));
+
+/** 右侧操作栏图标：统一 24 网格线性描边。 */
+function HistoryIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M3 12a9 9 0 1 0 2.6-6.3L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+function SessionsIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l2.2-3.3A8.5 8.5 0 1 1 21 11.5Z" />
+      <path d="M8 11h8" />
+      <path d="M8 14.5h5" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M4 7h16" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M6 7l1 13h10l1-13" />
+      <path d="M9 7V4h6v3" />
+    </svg>
+  );
+}
+
+function PanelIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M15 4v16" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+function PaperclipIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M21 11.5 12.5 20a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" />
+    </svg>
+  );
+}
+
+function ArrowUpIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M12 19V5" />
+      <path d="m5.5 11.5 6.5-6.5 6.5 6.5" />
+    </svg>
+  );
+}
 
 interface ActiveRun {
   runId: number;
@@ -790,6 +921,7 @@ export default function RoomPage() {
   const navigate = useNavigate();
   const roomId =
     id !== undefined && /^\d+$/.test(id) && Number(id) > 0 ? Number(id) : null;
+  const { setChrome } = useRoomChrome();
 
   const [room, setRoom] = useState<Room | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -822,16 +954,7 @@ export default function RoomPage() {
   );
   const [messageFilter, setMessageFilter] = useState<MessageFilter>("all");
   const [agentFilter, setAgentFilter] = useState<number | null>(null);
-  const [isCompact, setIsCompact] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      window.matchMedia("(max-width: 1099px)").matches,
-  );
-  const [sidebarOpen, setSidebarOpen] = useState(
-    () =>
-      typeof window === "undefined" ||
-      !window.matchMedia("(max-width: 1099px)").matches,
-  );
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [permissionSaving, setPermissionSaving] = useState(false);
   const [stickToBottom, setStickToBottom] = useState(true);
   const [unseenCount, setUnseenCount] = useState(0);
@@ -876,6 +999,7 @@ export default function RoomPage() {
   const activeRunsRef = useRef<Record<number, ActiveRun>>({});
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const cleanupInputRef = useRef<HTMLInputElement | null>(null);
+  const sideCloseRef = useRef<HTMLButtonElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentKeyRef = useRef(0);
   const pendingAttachmentsRef = useRef<PendingAttachment[]>([]);
@@ -938,22 +1062,18 @@ export default function RoomPage() {
     };
   }, []);
 
-  // 桌面窗口最小 1100px：仅在更窄的浏览器视口退化为抽屉，并跟随窗口缩放。
+  // 房间名与返回入口收进应用顶栏，页内不再渲染大标题。
   useEffect(() => {
-    const query = window.matchMedia("(max-width: 1099px)");
-    const sync = () => {
-      setIsCompact(query.matches);
-      setSidebarOpen(!query.matches);
-    };
-    sync();
-    query.addEventListener("change", sync);
-    return () => query.removeEventListener("change", sync);
-  }, []);
+    setChrome(buildRoomChrome(room, roomId));
+    return () => setChrome(null);
+  }, [room, roomId, setChrome]);
 
+  // 侧栏默认收起；打开时把焦点移入浮层，Esc 关闭。
   useEffect(() => {
-    if (!isCompact || !sidebarOpen) {
+    if (!sidebarOpen) {
       return;
     }
+    sideCloseRef.current?.focus();
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         setSidebarOpen(false);
@@ -961,7 +1081,7 @@ export default function RoomPage() {
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [isCompact, sidebarOpen]);
+  }, [sidebarOpen]);
 
   useEffect(() => {
     if (roomId === null) {
@@ -1305,17 +1425,7 @@ export default function RoomPage() {
     setCleanupError(null);
     try {
       const result = await api.messages.cleanup(roomId, keepRecent);
-      setCleanupResult(
-        result.deleted === 0
-          ? "没有可清理的聊天记录"
-          : `已清理 ${result.deleted} 条聊天记录` +
-              (result.artifactsDeleted > 0
-                ? `，同时删除 ${result.artifactsDeleted} 个归档文件`
-                : "") +
-              (result.attachmentsDeleted > 0
-                ? `、${result.attachmentsDeleted} 个附件`
-                : ""),
-      );
+      setCleanupResult(formatCleanupResult(result));
       setCleanupOpen(false);
       await reloadMessages();
     } catch (cause) {
@@ -2074,62 +2184,58 @@ export default function RoomPage() {
 
   return (
     <section className="page room-page page-fixed">
-      <PageHeader
-        className="room-head"
-        backTo="/rooms"
-        backLabel="房间列表"
-        title={room?.name ?? `房间 #${roomId}`}
-        meta={
-          <p className="path" title={room?.workspaceDirs.join("\n")}>
-            {room?.workspaceDir ?? "（房间信息不可用）"}
-            {room !== null && room.workspaceDirs.length > 1
-              ? ` · 另有 ${room.workspaceDirs.length - 1} 个目录`
-              : ""}
-          </p>
-        }
-        actionsClassName="room-head-actions"
-        actions={
-          <>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => openRunPage()}
-            >
-              运行记录
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => setSessionPanelOpen(true)}
-            >
-              会话
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm danger-text"
-              onClick={openCleanup}
-            >
-              清理历史
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm room-side-toggle"
-              aria-expanded={sidebarOpen}
-              aria-controls="room-side"
-              onClick={() => setSidebarOpen((open) => !open)}
-            >
-              {sidebarOpen ? "收起侧栏" : "展开侧栏"}
-            </button>
-          </>
-        }
-      />
-
       <p className="sr-only" role="status" aria-live="polite">
         {announcement}
       </p>
 
       <div className={`room-layout${sidebarOpen ? " side-open" : ""}`}>
         <div className="room-main">
+          <div
+            className="room-rail"
+            role="toolbar"
+            aria-label="房间操作"
+            aria-orientation="vertical"
+          >
+            <button
+              type="button"
+              className="room-rail-button"
+              title="运行记录"
+              aria-label="运行记录"
+              onClick={() => openRunPage()}
+            >
+              <HistoryIcon />
+            </button>
+            <button
+              type="button"
+              className="room-rail-button"
+              title="会话"
+              aria-label="会话"
+              onClick={() => setSessionPanelOpen(true)}
+            >
+              <SessionsIcon />
+            </button>
+            <button
+              type="button"
+              className="room-rail-button is-danger"
+              title="清理历史"
+              aria-label="清理历史"
+              onClick={openCleanup}
+            >
+              <TrashIcon />
+            </button>
+            <button
+              type="button"
+              className="room-rail-button"
+              title={sidebarOpen ? "收起侧栏" : "展开侧栏"}
+              aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"}
+              aria-expanded={sidebarOpen}
+              aria-controls="room-side"
+              onClick={() => setSidebarOpen((open) => !open)}
+            >
+              <PanelIcon />
+            </button>
+          </div>
+
           {discussionError !== null && (
             <p className="banner error" role="alert">
               {discussionError}
@@ -2275,8 +2381,19 @@ export default function RoomPage() {
               type="button"
               className="jump-latest"
               onClick={jumpToLatest}
+              aria-label={
+                unseenCount > 0
+                  ? `回到最新，${unseenCount} 条未读`
+                  : "回到最新"
+              }
+              title="回到最新"
             >
-              回到最新{unseenCount > 0 ? `（${unseenCount}）` : ""}
+              <ChevronDownIcon />
+              {unseenCount > 0 && (
+                <span className="jump-latest-count">
+                  {unseenCount > 99 ? "99+" : unseenCount}
+                </span>
+              )}
             </button>
           )}
 
@@ -2365,6 +2482,16 @@ export default function RoomPage() {
               </div>
             )}
             <div className="composer-input">
+              <button
+                type="button"
+                className="composer-attach"
+                title="添加附件"
+                aria-label="添加附件"
+                onClick={() => attachmentInputRef.current?.click()}
+                disabled={sending || discussionRunning}
+              >
+                <PaperclipIcon />
+              </button>
               <textarea
                 ref={textareaRef}
                 value={draft}
@@ -2384,7 +2511,7 @@ export default function RoomPage() {
                       ? "直接发送，内置主持人会接管；输入 @ 指定成员，输入 / 打开主持人命令"
                       : "输入消息并用 @ 指定成员；输入 / 打开主持人命令"
                 }
-                rows={2}
+                rows={1}
                 disabled={sending || discussionRunning}
                 aria-autocomplete="list"
                 aria-expanded={completionOpen}
@@ -2424,16 +2551,21 @@ export default function RoomPage() {
                   ))}
                 </ul>
               )}
+              <button
+                type="submit"
+                className="composer-send"
+                title={uploading ? "上传中…" : sending ? "发送中…" : "发送"}
+                aria-label={uploading ? "上传中" : sending ? "发送中" : "发送"}
+                disabled={
+                  sending ||
+                  discussionRunning ||
+                  (draft.trim() === "" && pendingAttachments.length === 0)
+                }
+              >
+                <ArrowUpIcon />
+              </button>
             </div>
             <div className="composer-actions">
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => attachmentInputRef.current?.click()}
-                disabled={sending || discussionRunning}
-              >
-                添加附件
-              </button>
               <span className="composer-hint">
                 Enter 发送、Shift+Enter 换行；输入 @ 选择成员、/ 打开主持人命令；
                 补全时 ↑↓ 选择、Enter 确认、Esc 关闭。支持拖放或粘贴图片。
@@ -2441,17 +2573,6 @@ export default function RoomPage() {
                   ? `需要讨论时请 @${builtinModerator.name} 说明主题。`
                   : ""}
               </span>
-              <button
-                type="submit"
-                className="btn btn-primary"
-                disabled={
-                  sending ||
-                  discussionRunning ||
-                  (draft.trim() === "" && pendingAttachments.length === 0)
-                }
-              >
-                {uploading ? "上传中…" : sending ? "发送中…" : "发送"}
-              </button>
             </div>
           </form>
         </div>
@@ -2463,6 +2584,7 @@ export default function RoomPage() {
           <div className="room-side-top">
             <span>房间面板</span>
             <button
+              ref={sideCloseRef}
               type="button"
               className="btn btn-ghost btn-sm"
               onClick={() => setSidebarOpen(false)}
@@ -3028,7 +3150,7 @@ export default function RoomPage() {
         </aside>
       </div>
 
-      {isCompact && sidebarOpen && (
+      {sidebarOpen && (
         <button
           type="button"
           className="room-side-backdrop"
@@ -3088,12 +3210,15 @@ export default function RoomPage() {
                 />
               </label>
               <p className="clean-hint">
-                0 表示清理全部纯聊天消息。任务、讨论、委派记录以及被它们引用的消息不会删除；房间有运行中的任务、讨论或委派时无法清理。
+                0 表示清理全部聊天窗口历史。纯聊天消息会被删除；讨论、任务、委派记录本身保留，它们的旧消息会从聊天窗口隐藏。房间有运行中的任务、讨论或委派时无法清理。
               </p>
               <p className="clean-preview" aria-live="polite">
                 预计清理 <strong>{preview.deleting}</strong> 条，保留{" "}
                 <strong>{preview.keeping}</strong> 条（共 {preview.eligible}{" "}
                 条纯聊天消息）
+                {preview.hidden > 0
+                  ? `；另将隐藏 ${preview.hidden} 条讨论/任务/委派记录`
+                  : ""}
               </p>
               {cleanupError !== null && (
                 <p className="banner error" role="alert">
@@ -3114,7 +3239,10 @@ export default function RoomPage() {
                 type="button"
                 className="btn btn-danger"
                 onClick={() => void submitCleanup()}
-                disabled={cleaning || preview.deleting === 0}
+                disabled={
+                  cleaning ||
+                  (preview.deleting === 0 && preview.hidden === 0)
+                }
               >
                 {cleaning ? "清理中…" : "确认清理"}
               </button>

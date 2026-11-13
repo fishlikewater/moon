@@ -579,6 +579,8 @@ export type RoomEvent =
 export interface MessageCleanupResult {
   /** 实际删除的消息条数 */
   deleted: number;
+  /** 因讨论/任务/委派记录保留而从聊天窗口隐藏的消息条数 */
+  hidden: number;
   /** 实际删除的归档文件数 */
   artifactsDeleted: number;
   /** 实际删除附件磁盘文件数 */
