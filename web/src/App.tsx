@@ -20,6 +20,7 @@ import SettingsPage from "./pages/SettingsPage";
 import TasksPage from "./pages/TasksPage";
 import { AppSidebar } from "./components/layout/AppSidebar";
 import { CommandPalette } from "./components/CommandPaletteDialog";
+import UpdateBanner from "./components/UpdateBanner";
 import {
   activeSection,
   readSidebarCollapsed,
@@ -449,6 +450,7 @@ function AppShell() {
         </header>
 
         <main className="app-main" id="main-content" tabIndex={-1}>
+          <UpdateBanner />
           <Routes>
             <Route path="/" element={<Navigate to="/agents" replace />} />
             <Route path="/agents" element={<AgentsPage />} />

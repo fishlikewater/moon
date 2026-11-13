@@ -34,6 +34,8 @@ Moon does not include model access. Install and sign in to at least one supporte
 
 Application data is stored in `%LOCALAPPDATA%\com.moon.workbench` on Windows.
 
+Moon checks GitHub Releases for updates after launch and shows a non-blocking notice; open **Settings → Software update** to check manually, download, and restart into the new version. Update packages are signed with a Minisign key — if that private key is lost, existing installs must be reinstalled manually.
+
 ## Quick start
 
 1. Create an agent and choose its harness, model, persona, and workspace.

@@ -34,6 +34,8 @@ Moon 不内置模型额度。请先安装并登录至少一个受支持的 CLI�
 
 Windows 上的应用数据保存在 `%LOCALAPPDATA%\com.moon.workbench`。
 
+Moon 启动后会从 GitHub Releases 静默检查更新，并以非阻断提示告知；可在「设置 → 软件更新」手动检查、下载并重启到新版本。更新包使用 Minisign 签名；签名私钥丢失后，已安装的旧版本只能重新安装。
+
 ## 快速开始
 
 1. 创建智能体，选择 harness、模型、人设与工作区。

@@ -1,6 +1,6 @@
 [package]
 name = "moon-server"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Moon 本地多智能体工作台 Rust 后端"
 license = "Apache-2.0"

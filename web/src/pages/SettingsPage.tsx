@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useLocation } from "react-router-dom";
 import type { HarnessBinaryStatus, RoomPermissionMode } from "@moon/shared";
 import { api, errorMessage } from "../api/client";
 import { BinaryStatusRow } from "../components/BinaryStatusRow";
 import { ListSkeleton } from "../components/layout/ListSkeleton";
 import { PageHeader } from "../components/layout/PageHeader";
+import UpdatePanel from "../components/UpdatePanel";
 import {
   formatBytes,
   parseSettingsDraft,
@@ -108,6 +110,28 @@ export default function SettingsPage() {
     window.addEventListener(THEME_CHANGE_EVENT, sync);
     return () => window.removeEventListener(THEME_CHANGE_EVENT, sync);
   }, []);
+
+  // 从更新横幅跳转过来时，设置内容渲染后只滚动一次；编辑设置不重复触发。
+  const location = useLocation();
+  const scrolledHashRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading || draft === null || typeof window === "undefined") {
+      return;
+    }
+    if (location.hash !== "#settings-update") {
+      scrolledHashRef.current = null;
+      return;
+    }
+    if (scrolledHashRef.current === location.hash) {
+      return;
+    }
+    const target = document.getElementById("settings-update");
+    if (target === null) {
+      return;
+    }
+    scrolledHashRef.current = location.hash;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [loading, draft, location.hash]);
 
   const update = <K extends keyof SettingsDraft>(
     key: K,
@@ -434,6 +458,8 @@ export default function SettingsPage() {
               </div>
             </div>
           </section>
+
+          <UpdatePanel />
 
           {saveError !== null && (
             <div className="settings-banner is-error" role="alert">

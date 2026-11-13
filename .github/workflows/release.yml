@@ -58,7 +58,46 @@ jobs:
         run: npm test
 
       - name: Build desktop installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run desktop:build
+
+      - name: Generate updater manifest
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $bundle = "desktop/src-tauri/target/release/bundle/nsis"
+          $installer = Get-ChildItem -Path "$bundle/*.exe" | Select-Object -First 1
+          if (-not $installer) {
+            throw "未找到 NSIS 安装包：$bundle"
+          }
+          $signaturePath = "$($installer.FullName).sig"
+          if (-not (Test-Path $signaturePath)) {
+            throw "未找到更新包签名：$signaturePath（请检查 TAURI_SIGNING_PRIVATE_KEY 与 bundle.createUpdaterArtifacts）"
+          }
+          $signature = (Get-Content $signaturePath -Raw -Encoding UTF8).Trim()
+          $version = (Get-Content desktop/src-tauri/tauri.conf.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
+          $url = "https://github.com/fishlikewater/moon/releases/download/$($env:TAG)/$($installer.Name)"
+          $payload = [ordered]@{
+            version = $version
+            notes = "Moon $version"
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = $signature
+                url = $url
+              }
+            }
+          }
+          $json = $payload | ConvertTo-Json -Depth 5
+          [System.IO.File]::WriteAllText("$bundle/latest.json", $json, [System.Text.UTF8Encoding]::new($false))
+          $check = Get-Content "$bundle/latest.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($check.version -ne $version) { throw "latest.json 版本与配置不一致" }
+          if ($check.platforms.'windows-x86_64'.url -ne $url) { throw "latest.json URL 与安装包不一致" }
+          if ($check.platforms.'windows-x86_64'.signature -ne $signature) { throw "latest.json 签名与 .sig 不一致" }
+          "updater=$($installer.Name)"
 
       - name: Generate checksum
         shell: pwsh
@@ -85,9 +124,19 @@ jobs:
           if (-not $installer) {
             throw "未找到 NSIS 安装包：$bundle"
           }
+          $signaturePath = "$($installer.FullName).sig"
+          if (-not (Test-Path $signaturePath)) {
+            throw "未找到更新包签名：$signaturePath"
+          }
+          $assets = @(
+            $installer.FullName
+            $signaturePath
+            "$bundle/latest.json"
+            "$bundle/SHA256.txt"
+          )
           gh release view $tag --json tagName *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $installer.FullName "$bundle/SHA256.txt" --clobber
+            gh release upload $tag $assets --clobber
           } else {
-            gh release create "$tag" --title "$tag" --generate-notes $installer.FullName "$bundle/SHA256.txt"
+            gh release create "$tag" --title "$tag" --generate-notes $assets
           }
