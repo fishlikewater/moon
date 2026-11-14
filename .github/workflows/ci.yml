@@ -58,10 +58,27 @@ jobs:
       - name: Test Rust backend
         run: npm run test:rust
 
+      # createUpdaterArtifacts 开启后每次 tauri build 都需要签名私钥；
+      # push main 可以读仓库 Secrets（与 release.yml 一致），pull_request
+      # （含同仓库 PR）读不到 Secrets，改用内联 config 禁用更新包工件。
       - name: Build desktop installer
+        if: github.event_name == 'push'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run desktop:build
 
+      - name: Build desktop (pull_request, no updater artifacts)
+        if: github.event_name == 'pull_request'
+        run: |
+          npm run build:shared
+          npm run build -w @moon/web
+          $config = Join-Path $env:RUNNER_TEMP "tauri-pr-config.json"
+          [System.IO.File]::WriteAllText($config, '{"bundle":{"createUpdaterArtifacts":false}}', [System.Text.UTF8Encoding]::new($false))
+          npm run tauri -- build --config $config
+
       - name: Upload installer
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: moon-windows-installer
