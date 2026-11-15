@@ -28,6 +28,8 @@ const item = {
   agentCount: 0,
   capabilities: null,
   probedAt: null,
+  probeError: null,
+  probeFailedAt: null,
 };
 
 function readyRegistry(): AcpRegistryState {

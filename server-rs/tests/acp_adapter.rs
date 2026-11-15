@@ -9,7 +9,9 @@ use futures_util::StreamExt;
 use moon_server::adapters::acp::probe_capabilities;
 use moon_server::adapters::{AcpAdapter, AdapterFactory, HarnessAdapter};
 use moon_server::db::Db;
-use moon_server::domain::harness::{CreateCustomHarnessInput, CustomHarness};
+use moon_server::domain::harness::{
+    CreateCustomHarnessInput, CustomHarness, UpdateCustomHarnessInput,
+};
 use moon_server::domain::room::RoomPermissionMode;
 use moon_server::domain::run_event::{RunEvent, RunInput};
 use moon_server::domain::session::RunSessionContext;
@@ -1331,5 +1333,114 @@ fn process_exists(pid: u32) -> bool {
             .map(|status| status.success())
             .unwrap_or(false)
     }
+}
+
+/// 预检失败：命令不存在时秒级返回可操作原因并落库（不启动 agent 协议流程）。
+#[tokio::test]
+async fn acp_probe_preflight_failure_persists_error() {
+    let harness = setup_fake_harness(Vec::new()).await;
+    // 把命令改成 PATH 上必然不存在的名称：预检直接失败。
+    harness
+        .state
+        .custom_harness_store
+        .update(
+            harness.custom_harness_id,
+            UpdateCustomHarnessInput {
+                command: Some("moon-not-installed-agent".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let error = harness
+        .state
+        .custom_harness_service
+        .probe(harness.custom_harness_id, None)
+        .await
+        .expect_err("预检失败应返回错误");
+
+    assert!(
+        error.message.contains("找不到命令"),
+        "应包含可操作的原因：{}",
+        error.message
+    );
+    let stored = harness
+        .state
+        .custom_harness_store
+        .get_by_id(harness.custom_harness_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.probe_error.as_deref(),
+        Some(error.message.as_str()),
+        "预检失败原因应落库"
+    );
+    assert!(stored.probe_failed_at.is_some());
+    assert!(stored.capabilities.is_none(), "不应产生能力快照");
+}
+
+/// 探测失败落库 → 修复命令后再探测 → 失败标记清空且能力快照生效。
+#[tokio::test]
+async fn acp_probe_failure_persists_then_success_clears() {
+    require_node();
+    let harness = setup_fake_harness(vec![
+        "--hang-handshake".to_string(),
+    ])
+    .await;
+    // 先探测：握手挂起触发超时（钳制下界 1 秒），失败应落库。
+    let error = harness
+        .state
+        .custom_harness_service
+        .probe(harness.custom_harness_id, Some(1))
+        .await
+        .expect_err("握手挂起时应超时失败");
+    assert!(
+        error.message.contains("能力探测超过"),
+        "应返回探测超时错误：{}",
+        error.message
+    );
+    let failed = harness
+        .state
+        .custom_harness_store
+        .get_by_id(harness.custom_harness_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(failed.probe_error.is_some());
+    assert!(failed.probe_failed_at.is_some());
+
+    // 修复命令后重新探测：成功清空失败标记，能力快照生效。
+    harness
+        .state
+        .custom_harness_store
+        .update(
+            harness.custom_harness_id,
+            UpdateCustomHarnessInput {
+                args: Some(vec![FAKE_AGENT_SCRIPT.to_string()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let response = harness
+        .state
+        .custom_harness_service
+        .probe(harness.custom_harness_id, None)
+        .await
+        .expect("修复后探测应成功");
+    assert!(!response.models.is_empty(), "fake agent 应自报模型");
+
+    let stored = harness
+        .state
+        .custom_harness_store
+        .get_by_id(harness.custom_harness_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.capabilities.is_some());
+    assert!(stored.probe_error.is_none(), "成功后失败标记应清空");
+    assert!(stored.probe_failed_at.is_none());
 }
 

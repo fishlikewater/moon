@@ -115,6 +115,17 @@ export interface CustomHarness {
   capabilities: AcpCapabilities | null;
   /** 最近一次探测时间；未探测为 null。 */
   probedAt: number | null;
+  /** 最近一次探测失败的分类原因；成功或未探测为 null。 */
+  probeError: string | null;
+  /** 最近一次探测失败时间；成功或未探测为 null。 */
+  probeFailedAt: number | null;
+}
+
+/** ACP 预检问题：随探测错误响应的 details.issues 数组下发。 */
+export interface AcpPreflightIssue {
+  /** 稳定分类键：commandMissing / nodeMissing。 */
+  kind: "commandMissing" | "nodeMissing";
+  message: string;
 }
 
 /** ACP agent 自报的模式与模型能力快照。 */

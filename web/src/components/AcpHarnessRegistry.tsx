@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CustomHarness } from "@moon/shared";
 import { api, errorMessage } from "../api/client";
-import { AcpCapabilityDetail } from "./acpCapabilityDetail";
+import { AcpCapabilityDetail, formatProbedAt } from "./acpCapabilityDetail";
 import { AcpHarnessFormModal } from "./AcpHarnessFormModal";
 import {
   indexRegistryByPackage,
@@ -13,6 +13,84 @@ import { useAcpRegistry } from "../useAcpRegistry";
 interface AcpHarnessRegistryProps {
   /** 注册表变化后回传最新列表，供页面统计条目数；可选。 */
   onChanged?: (items: CustomHarness[]) => void;
+}
+
+/** 首次探测放宽上限：npx 首次运行需要下载依赖，默认 15 秒会中途失败。 */
+export const FIRST_PROBE_TIMEOUT_SECS = 90;
+
+/** 条目可用性三态：探测成功 / 失败（含原因）/ 从未探测。 */
+export type AcpAvailability = {
+  tone: "ready" | "error" | "pending";
+  label: string;
+};
+
+/** 纯函数：从条目快照推导可用性三态，供徽标与测试共用。 */
+export function resolveAcpAvailability(
+  item: Pick<CustomHarness, "capabilities" | "probeError">,
+): AcpAvailability {
+  // 最近一次失败优先展示：曾成功后失败（如卸载 Node）必须显示不可用，
+  // 否则「装/卸 Node 的可解释性」这个核心场景永远不可达。
+  if (item.probeError !== null) {
+    return { tone: "error", label: "不可用" };
+  }
+  if (item.capabilities !== null) {
+    return {
+      tone: "ready",
+      label: `已探测 · ${item.capabilities.models.length} 模型 ${item.capabilities.modes.length} 模式`,
+    };
+  }
+  return { tone: "pending", label: "未检测" };
+}
+
+/** 纯函数：是否应该自动探测（从未探测过，无论成功失败都不重复 spawn）。 */
+export function shouldAutoProbe(
+  item: Pick<CustomHarness, "capabilities" | "probeError">,
+): boolean {
+  return item.capabilities === null && item.probeError === null;
+}
+
+/** 纯函数：按列表顺序取下一个应自动探测的条目；没有则返回 null。 */
+export function nextAutoProbeTarget(
+  items: readonly Pick<
+    CustomHarness,
+    "id" | "capabilities" | "probeError"
+  >[],
+  probedIds: ReadonlySet<number>,
+): Pick<CustomHarness, "id" | "capabilities" | "probeError"> | null {
+  return (
+    items.find(
+      (item) => shouldAutoProbe(item) && !probedIds.has(item.id),
+    ) ?? null
+  );
+}
+
+/** 纯函数：探测超时——从未探测放宽到 90 秒，其余走服务端默认（15 秒）。 */
+export function probeTimeoutFor(
+  item: Pick<CustomHarness, "capabilities" | "probeError">,
+): number | undefined {
+  return shouldAutoProbe(item) ? FIRST_PROBE_TIMEOUT_SECS : undefined;
+}
+
+/** 纯函数：任一条目当前可用（最近一次失败优先于旧成功快照，与三态徽标一致）。 */
+export function acpUsableFromItems(
+  items: readonly Pick<CustomHarness, "capabilities" | "probeError">[],
+): boolean {
+  return items.some((item) => resolveAcpAvailability(item).tone === "ready");
+}
+
+/** 纯函数：相对时间（刚刚 / N 分钟前 / N 小时前 / 超过一天回退绝对时间）。 */
+export function formatRelativeTime(value: number, now: number = Date.now()): string {
+  const deltaSeconds = Math.max(0, Math.round((now - value) / 1000));
+  if (deltaSeconds < 60) {
+    return "刚刚";
+  }
+  if (deltaSeconds < 3600) {
+    return `${Math.round(deltaSeconds / 60)} 分钟前`;
+  }
+  if (deltaSeconds < 86400) {
+    return `${Math.round(deltaSeconds / 3600)} 小时前`;
+  }
+  return formatProbedAt(value);
 }
 
 /**
@@ -110,19 +188,60 @@ export function AcpHarnessRegistry({ onChanged }: AcpHarnessRegistryProps) {
     void reload({ showLoading: false });
   }, [reload]);
 
-  const probe = async (item: CustomHarness) => {
-    setProbeError(null);
-    setProbingId(item.id);
-    try {
-      await api.customHarnesses.probe(item.id);
-      // 重新读取列表：服务端已写入 capabilitiesJson/probedAt，页面也需要最新快照。
-      await reload();
-    } catch (cause) {
-      setProbeError({ id: item.id, message: errorMessage(cause) });
-    } finally {
-      setProbingId(null);
+  const probe = useCallback(
+    async (item: Pick<CustomHarness, "id">, timeoutSecs?: number) => {
+      setProbeError(null);
+      setProbingId(item.id);
+      try {
+        await api.customHarnesses.probe(item.id, timeoutSecs);
+        // 服务端已写入 capabilities/probedAt，页面需要最新快照。
+        await reload();
+      } catch (cause) {
+        setProbeError({ id: item.id, message: errorMessage(cause) });
+        // 失败原因已落库：刷新列表让持久徽标立即显示，不重复弹错误。
+        await reload({ showLoading: false }).catch(() => undefined);
+      } finally {
+        setProbingId(null);
+      }
+    },
+    [reload],
+  );
+
+  // 新手引导的自动探测：从未探测的条目在列表就绪后串行探测一次。
+  //
+  // 并发恒为 1：autoProbeRunningRef 保证任一时刻只有一个循环在飞（失败
+  // reload 会让 items 变化并重启 effect，但运行中的循环不受影响，继续从
+  // itemsRef 取最新列表）；每轮目标从最新 itemsRef + 已处理集合计算，
+  // 失败条目也会标记，避免重复 spawn。
+  const itemsRef = useRef<CustomHarness[]>([]);
+  const autoProbedRef = useRef<Set<number>>(new Set());
+  const autoProbeRunningRef = useRef(false);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+  useEffect(() => {
+    if (loading || autoProbeRunningRef.current) {
+      return;
     }
-  };
+    if (nextAutoProbeTarget(items, autoProbedRef.current) === null) {
+      return;
+    }
+    autoProbeRunningRef.current = true;
+    void (async () => {
+      try {
+        for (;;) {
+          const target = nextAutoProbeTarget(itemsRef.current, autoProbedRef.current);
+          if (target === null) {
+            return;
+          }
+          autoProbedRef.current.add(target.id);
+          await probe(target, FIRST_PROBE_TIMEOUT_SECS);
+        }
+      } finally {
+        autoProbeRunningRef.current = false;
+      }
+    })();
+  }, [loading, items, probe]);
 
   const remove = async (item: CustomHarness) => {
     if (!window.confirm(`确认删除自定义 ACP agent「${item.name}」？`)) {
@@ -192,7 +311,10 @@ export function AcpHarnessRegistry({ onChanged }: AcpHarnessRegistryProps) {
           capability={capabilityItem.capabilities}
           probedAt={capabilityItem.probedAt}
           probeError={
-            probeError?.id === capabilityItem.id ? probeError.message : null
+            // 即时失败优先；否则展示持久化的最近失败，避免详情页只报喜不报忧。
+            probeError?.id === capabilityItem.id
+              ? probeError.message
+              : capabilityItem.probeError
           }
           onBack={closeCapability}
         />
@@ -218,6 +340,13 @@ export function AcpHarnessRegistry({ onChanged }: AcpHarnessRegistryProps) {
                 const envCount = Object.keys(item.env).length;
                 const commandLine = [item.command, ...item.args].join(" ");
                 const inUse = item.agentCount > 0;
+                const availability = resolveAcpAvailability(item);
+                const availabilityClass =
+                  availability.tone === "ready"
+                    ? "badge-ready"
+                    : availability.tone === "error"
+                      ? "badge-error"
+                      : "badge-progress";
                 const busy =
                   probingId !== null ||
                   deletingId !== null ||
@@ -231,6 +360,9 @@ export function AcpHarnessRegistry({ onChanged }: AcpHarnessRegistryProps) {
                     <div className="acp-harness-body">
                       <div className="acp-harness-title-row">
                         <h3 className="acp-harness-name">{item.name}</h3>
+                        <span className={`badge ${availabilityClass}`}>
+                          {availability.label}
+                        </span>
                         <span className="badge">
                           {inUse ? `引用 ${item.agentCount}` : "未引用"}
                         </span>
@@ -239,6 +371,13 @@ export function AcpHarnessRegistry({ onChanged }: AcpHarnessRegistryProps) {
                         )}
                       </div>
                       <code className="acp-harness-command">{commandLine}</code>
+                      {item.probeError !== null && (
+                        <p className="field-hint" role="alert">
+                          {item.probeError}
+                          {item.probeFailedAt !== null &&
+                            `（检测于 ${formatRelativeTime(item.probeFailedAt)}）`}
+                        </p>
+                      )}
                       {inUse && (
                         <p className="field-hint">
                           正被 {item.agentCount} 个智能体引用，先改绑这些智能体后才能删除。
@@ -287,11 +426,13 @@ export function AcpHarnessRegistry({ onChanged }: AcpHarnessRegistryProps) {
                       <button
                         type="button"
                         className="btn btn-secondary btn-sm"
-                        aria-label={`探测自定义 ACP agent ${item.name}`}
-                        onClick={() => void probe(item)}
+                        aria-label={`检测自定义 ACP agent ${item.name} 的能力`}
+                        onClick={() =>
+                          void probe(item, probeTimeoutFor(item))
+                        }
                         disabled={busy}
                       >
-                        {probingId === item.id ? "探测中…" : "探测模型/权限"}
+                        {probingId === item.id ? "检测中…" : "检测能力"}
                       </button>
                       <button
                         type="button"

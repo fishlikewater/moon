@@ -251,9 +251,13 @@ export const api = {
       }),
     remove: (id: number): Promise<void> =>
       requestJson<void>(`/api/custom-harnesses/${id}`, { method: "DELETE" }),
-    probe: (id: number): Promise<AcpProbeResponse> =>
+    probe: (id: number, timeoutSecs?: number): Promise<AcpProbeResponse> =>
       requestJson<AcpProbeResponse>(`/api/custom-harnesses/${id}/probe`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          timeoutSecs === undefined ? {} : { timeoutSecs },
+        ),
       }),
   },
   rooms: {

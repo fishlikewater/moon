@@ -7,7 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use crate::domain::harness::{AcpProbeResponse, CustomHarness};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::routes::parse_json_body;
 use crate::AppState;
 
@@ -36,9 +36,17 @@ async fn get_one(
 async fn probe(
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
+    body: Bytes,
 ) -> AppResult<Json<AcpProbeResponse>> {
     let id = crate::services::parse_id(&raw_id)?;
-    Ok(Json(state.custom_harness_service.probe(id).await?))
+    let body = require_body_map(&body)?;
+    let timeout_secs = match body.get("timeoutSecs") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            AppError::validation("timeoutSecs 必须是 1 到 120 之间的整数")
+        })?),
+    };
+    Ok(Json(state.custom_harness_service.probe(id, timeout_secs).await?))
 }
 
 async fn create(

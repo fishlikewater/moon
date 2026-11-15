@@ -54,11 +54,16 @@ impl ErrorCode {
 }
 
 /// 统一业务错误载体：`code` 决定 HTTP 状态码，`source` 仅用于内部诊断。
+///
+/// `details` 携带面向客户端的结构化补充（如预检 issues 数组），
+/// 只进错误响应 JSON，不参与 Display/source 链。
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct AppError {
     pub code: ErrorCode,
     pub message: String,
+    /// 结构化补充信息；大多数错误为 `None`。
+    pub details: Option<serde_json::Value>,
     #[source]
     pub source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
@@ -68,6 +73,7 @@ impl AppError {
         Self {
             code,
             message: message.into(),
+            details: None,
             source: None,
         }
     }
@@ -80,8 +86,15 @@ impl AppError {
         Self {
             code,
             message: message.into(),
+            details: None,
             source: Some(Box::new(source)),
         }
+    }
+
+    /// 附加结构化补充信息（面向客户端的 issues 数组等）。
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
 
     pub fn validation(message: impl Into<String>) -> Self {
@@ -139,12 +152,14 @@ impl IntoResponse for AppError {
             tracing::warn!(code = self.code.as_str(), message = %self.message, "request rejected");
         }
 
-        let body = json!({
-            "error": {
-                "code": self.code.as_str(),
-                "message": self.message,
-            }
+        let mut error_body = json!({
+            "code": self.code.as_str(),
+            "message": self.message,
         });
+        if let Some(details) = &self.details {
+            error_body["details"] = details.clone();
+        }
+        let body = json!({ "error": error_body });
         (status, Json(body)).into_response()
     }
 }

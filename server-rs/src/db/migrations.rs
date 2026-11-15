@@ -11,7 +11,7 @@ use sqlx::{Row, SqlitePool, Transaction};
 
 use crate::error::AppResult;
 
-pub const LATEST_VERSION: i64 = 22;
+pub const LATEST_VERSION: i64 = 23;
 
 enum Step {
     /// 一段可包含多条语句的 DDL/DML。
@@ -315,6 +315,21 @@ const MIGRATIONS: &[Migration] = &[
             column: "history_start_message_id",
             definition: "INTEGER NOT NULL DEFAULT 0",
         }],
+    },
+    Migration {
+        version: 23,
+        steps: &[
+            Step::AddColumn {
+                table: "custom_harnesses",
+                column: "probe_error",
+                definition: "TEXT",
+            },
+            Step::AddColumn {
+                table: "custom_harnesses",
+                column: "probe_failed_at",
+                definition: "INTEGER",
+            },
+        ],
     },
 ];
 

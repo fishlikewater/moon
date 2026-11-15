@@ -362,3 +362,64 @@ async fn get_custom_harness_returns_404_when_missing() {
     let response = get(&app, "/api/custom-harnesses/999").await;
     assert_eq!(response.status, StatusCode::NOT_FOUND, "{:?}", response.body);
 }
+
+/// probe 的 timeoutSecs 必须是数字；预检失败响应携带结构化 issues 并落库。
+#[tokio::test]
+async fn probe_validates_timeout_secs_and_reports_preflight_issues() {
+    let app = setup().await;
+    let created = post(
+        &app,
+        "/api/custom-harnesses",
+        json!({
+            "name": "预检冒烟",
+            "command": "moon-not-installed-agent",
+            "args": [],
+            "env": {},
+        }),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let id = created.body["id"].as_i64().unwrap();
+
+    // timeoutSecs 非数字：路由层直接 400。
+    let bad_timeout = post(
+        &app,
+        &format!("/api/custom-harnesses/{id}/probe"),
+        json!({"timeoutSecs": "abc"}),
+    )
+    .await;
+    assert_eq!(bad_timeout.status, StatusCode::BAD_REQUEST, "{:?}", bad_timeout.body);
+    assert!(
+        bad_timeout.body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("timeoutSecs"),
+        "应提示 timeoutSecs 不合法：{:?}",
+        bad_timeout.body
+    );
+
+    // 预检失败：400 + details.issues 数组（commandMissing），原因落库。
+    let preflight_failed = post(
+        &app,
+        &format!("/api/custom-harnesses/{id}/probe"),
+        json!({"timeoutSecs": 1}),
+    )
+    .await;
+    assert_eq!(preflight_failed.status, StatusCode::BAD_REQUEST, "{:?}", preflight_failed.body);
+    let issues = preflight_failed.body["error"]["details"]["issues"]
+        .as_array()
+        .expect("预检失败应携带 issues 数组");
+    assert_eq!(issues[0]["kind"], "commandMissing");
+    assert!(issues[0]["message"].as_str().unwrap().contains("找不到命令"));
+
+    let cached = get(&app, &format!("/api/custom-harnesses/{id}")).await;
+    assert!(
+        cached.body["probeError"]
+            .as_str()
+            .unwrap()
+            .contains("找不到命令"),
+        "失败原因应落库：{:?}",
+        cached.body
+    );
+    assert!(cached.body["probeFailedAt"].as_i64().is_some());
+}

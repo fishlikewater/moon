@@ -10,7 +10,7 @@ use crate::domain::now_ms;
 use crate::error::AppResult;
 
 const CUSTOM_HARNESS_COLUMNS: &str = "h.id, h.name, h.command, h.args_json, h.env_json, h.created_at,
-    h.capabilities_json, h.probed_at,
+    h.capabilities_json, h.probed_at, h.probe_error, h.probe_failed_at,
     (SELECT COUNT(*) FROM agents a WHERE a.custom_harness_id = h.id) AS agent_count";
 
 #[derive(Debug, Clone)]
@@ -53,6 +53,8 @@ impl CustomHarnessStore {
             agent_count: 0,
             capabilities: None,
             probed_at: None,
+            probe_error: None,
+            probe_failed_at: None,
         })
     }
 
@@ -118,10 +120,12 @@ impl CustomHarnessStore {
             agent_count,
             capabilities: existing.capabilities,
             probed_at: existing.probed_at,
+            probe_error: existing.probe_error,
+            probe_failed_at: existing.probe_failed_at,
         }))
     }
 
-    /// 写入最近一次探测结果；失败时调用方保留旧缓存（不调用本方法）。
+    /// 写入最近一次探测结果；同时清空上一次失败标记。
     pub async fn save_capabilities(
         &self,
         id: i64,
@@ -131,11 +135,26 @@ impl CustomHarnessStore {
         let capabilities_json = serde_json::to_string(capabilities)?;
         let result = sqlx::query(
             "UPDATE custom_harnesses
-                SET capabilities_json = ?, probed_at = ?
+                SET capabilities_json = ?, probed_at = ?, probe_error = NULL, probe_failed_at = NULL
               WHERE id = ?",
         )
         .bind(capabilities_json)
         .bind(probed_at)
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// 写入最近一次探测失败的分类原因；成功快照保持不变，便于对比修复效果。
+    pub async fn save_probe_failure(&self, id: i64, error: &str, failed_at: i64) -> AppResult<bool> {
+        let result = sqlx::query(
+            "UPDATE custom_harnesses
+                SET probe_error = ?, probe_failed_at = ?
+              WHERE id = ?",
+        )
+        .bind(error)
+        .bind(failed_at)
         .bind(id)
         .execute(self.pool())
         .await?;
@@ -172,6 +191,8 @@ struct CustomHarnessRow {
     created_at: i64,
     capabilities_json: Option<String>,
     probed_at: Option<i64>,
+    probe_error: Option<String>,
+    probe_failed_at: Option<i64>,
     agent_count: i64,
 }
 
@@ -212,5 +233,7 @@ fn map_row(row: CustomHarnessRow) -> AppResult<CustomHarness> {
         agent_count: row.agent_count,
         capabilities,
         probed_at: row.probed_at,
+        probe_error: row.probe_error,
+        probe_failed_at: row.probe_failed_at,
     })
 }

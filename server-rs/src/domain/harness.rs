@@ -27,6 +27,10 @@ pub struct CustomHarness {
     pub capabilities: Option<AcpCapabilities>,
     /// 最近一次探测时间（epoch 毫秒）；未探测为 `None`。
     pub probed_at: Option<i64>,
+    /// 最近一次探测失败的分类原因；成功或未探测为 `None`。
+    pub probe_error: Option<String>,
+    /// 最近一次探测失败时间（epoch 毫秒）；成功或未探测为 `None`。
+    pub probe_failed_at: Option<i64>,
 }
 
 /// ACP agent 自报的模式与模型能力快照。

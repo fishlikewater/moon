@@ -1425,6 +1425,23 @@ svg {
   border-color: var(--color-primary-border);
 }
 
+/* ACP 注册表的探测失败徽标：沿用 danger token，暗色主题自动适配。 */
+.badge-error {
+  color: var(--color-danger-strong);
+  background: var(--color-danger-soft);
+  border-color: var(--color-danger-border);
+}
+
+/* 新手引导卡片：复用 card 容器，步骤列表保持紧凑。 */
+.acp-onboarding-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: var(--color-text-secondary);
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;

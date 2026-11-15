@@ -55,6 +55,8 @@ describe("acpHarnessForm", () => {
       agentCount: 2,
       capabilities: null,
       probedAt: null,
+      probeError: null,
+      probeFailedAt: null,
     };
 
     expect(harnessFormFromItem(item)).toEqual({

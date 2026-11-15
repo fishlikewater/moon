@@ -1,6 +1,7 @@
 //! harness 适配器统一接口与工厂。
 
 pub mod acp;
+pub mod acp_preflight;
 pub mod codex;
 pub mod codex_config;
 pub mod fake;

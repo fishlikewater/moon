@@ -17,8 +17,10 @@ use crate::error::{AppError, AppResult};
 use crate::services::require_non_empty_string;
 use crate::store::CustomHarnessStore;
 
-/// 能力探测上限：initialize + session/new，必须远小于普通运行上限。
+/// 能力探测默认上限：initialize + session/new，必须远小于普通运行上限。
 pub const PROBE_TIMEOUT_SECS: u64 = 15;
+/// 首次探测放宽上限：npx 首次运行需要下载依赖，可能远超 15 秒。
+pub const MAX_PROBE_TIMEOUT_SECS: u64 = 120;
 
 pub struct CustomHarnessService {
     store: CustomHarnessStore,
@@ -100,21 +102,50 @@ impl CustomHarnessService {
         Ok(())
     }
 
-    /// 探测 agent 自报的模型与模式；失败时不覆盖旧缓存。
-    pub async fn probe(&self, id: i64) -> AppResult<AcpProbeResponse> {
+    /// 探测 agent 自报的模型与模式；预检失败不 spawn，失败原因（含分类）落库。
+    ///
+    /// `timeout_secs` 缺省 15 秒，可放宽到 120 秒（首次 npx 下载场景）。
+    /// 成功清空失败标记；失败统一在本层落库，保留旧能力快照。
+    pub async fn probe(
+        &self,
+        id: i64,
+        timeout_secs: Option<u64>,
+    ) -> AppResult<AcpProbeResponse> {
         let harness = self.get(id).await?;
+        match self.probe_inner(&harness, timeout_secs).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                let message = truncate_probe_error(&error.message);
+                self.store
+                    .save_probe_failure(id, &message, now_ms())
+                    .await?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn probe_inner(
+        &self,
+        harness: &CustomHarness,
+        timeout_secs: Option<u64>,
+    ) -> AppResult<AcpProbeResponse> {
+        // 预检失败不需要启动 agent：秒级返回结构化原因（issues 数组）。
+        let preflight = crate::adapters::acp_preflight::check_command(&harness.command);
+        if !preflight.is_ok() {
+            let issues = serde_json::to_value(&preflight.issues)?;
+            let message = truncate_probe_error(&preflight.message());
+            return Err(AppError::validation(message).with_details(serde_json::json!({
+                "issues": issues,
+            })));
+        }
+        let timeout = Duration::from_secs(probe_timeout_secs(timeout_secs));
         let workspace_dir = std::env::current_dir()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|_| ".".to_string());
-        let capabilities = probe_capabilities(
-            &harness,
-            &workspace_dir,
-            Duration::from_secs(PROBE_TIMEOUT_SECS),
-        )
-        .await?;
+        let capabilities = probe_capabilities(harness, &workspace_dir, timeout).await?;
         let probed_at = now_ms();
         self.store
-            .save_capabilities(id, &capabilities, probed_at)
+            .save_capabilities(harness.id, &capabilities, probed_at)
             .await?;
         Ok(AcpProbeResponse::new(capabilities, probed_at))
     }
@@ -153,5 +184,43 @@ fn parse_env(value: Option<&Value>) -> AppResult<BTreeMap<String, String>> {
             Ok(env)
         }
         Some(_) => Err(AppError::validation("env 必须是字符串到字符串的对象")),
+    }
+}
+
+/// 探测失败文案截断：按字符截断到 200，避免 stderr 摘要撑爆徽标与列表。
+fn truncate_probe_error(message: &str) -> String {
+    const LIMIT: usize = 200;
+    let trimmed = message.trim();
+    if trimmed.chars().count() <= LIMIT {
+        return trimmed.to_string();
+    }
+    let truncated: String = trimmed.chars().take(LIMIT).collect();
+    format!("{truncated}…")
+}
+
+/// 探测超时钳制：缺省 15 秒，下界 1 秒、上界 120 秒。
+fn probe_timeout_secs(raw: Option<u64>) -> u64 {
+    raw.unwrap_or(PROBE_TIMEOUT_SECS)
+        .clamp(1, MAX_PROBE_TIMEOUT_SECS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_timeout_secs_clamps_to_bounds() {
+        assert_eq!(probe_timeout_secs(None), 15);
+        assert_eq!(probe_timeout_secs(Some(0)), 1);
+        assert_eq!(probe_timeout_secs(Some(90)), 90);
+        assert_eq!(probe_timeout_secs(Some(999)), 120);
+    }
+
+    #[test]
+    fn truncate_probe_error_keeps_first_200_chars() {
+        let long = "长".repeat(260);
+        let truncated = truncate_probe_error(&long);
+        assert!(truncated.chars().count() == 201, "200 字符 + 省略号");
+        assert!(truncated.ends_with('…'));
     }
 }

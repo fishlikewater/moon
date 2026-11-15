@@ -3,7 +3,7 @@ import type { CustomHarness } from "@moon/shared";
 import { acpDraftModels, acpDraftReasoningLevels } from "./agentBuilderDraft";
 
 function customHarness(overrides: Partial<CustomHarness>): CustomHarness {
-  return {
+  const base: CustomHarness = {
     id: 7,
     name: "本地 ACP",
     command: "agent-acp",
@@ -13,8 +13,10 @@ function customHarness(overrides: Partial<CustomHarness>): CustomHarness {
     agentCount: 0,
     capabilities: null,
     probedAt: null,
-    ...overrides,
+    probeError: null,
+    probeFailedAt: null,
   };
+  return { ...base, ...overrides } as CustomHarness;
 }
 
 describe("acpDraftModels", () => {
