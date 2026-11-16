@@ -922,6 +922,13 @@ export default function AgentsPage() {
                   </div>
 
                   <div className="agent-actions">
+                    <Link
+                      className="btn btn-secondary btn-sm"
+                      to={`/chat/${agent.id}`}
+                      aria-label={`与智能体 ${agent.name} 对话`}
+                    >
+                      对话
+                    </Link>
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"

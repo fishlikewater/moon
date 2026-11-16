@@ -1758,6 +1758,7 @@ mod tests {
             permission_mode: crate::domain::room::RoomPermissionMode::Auto,
             created_at: 1,
             last_activity_at: None,
+            room_type: crate::domain::room::RoomType::Group,
         }
     }
 

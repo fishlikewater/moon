@@ -31,6 +31,7 @@ import type {
   RoomPermissionMode,
   RoomReplyMode,
   RoomSessionsResponse,
+  RoomType,
   RunDetailResponse,
   SessionOverview,
   Task,
@@ -215,6 +216,15 @@ export const api = {
       }),
     remove: (id: number): Promise<void> =>
       requestJson<void>(`/api/agents/${id}`, { method: "DELETE" }),
+    /** 智能体直聊：GET 只读（未创建 404），POST 幂等创建。 */
+    directChat: {
+      get: (id: number): Promise<Room> =>
+        requestJson<Room>(`/api/agents/${id}/direct-chat`),
+      create: (id: number): Promise<Room> =>
+        requestJson<Room>(`/api/agents/${id}/direct-chat`, {
+          method: "POST",
+        }),
+    },
   },
   agentBuilder: {
     chat: (
@@ -282,7 +292,13 @@ export const api = {
       requestJson<void>(`/api/api-providers/${id}`, { method: "DELETE" }),
   },
   rooms: {
-    list: (): Promise<Room[]> => requestJson<Room[]>("/api/rooms"),
+    /** 默认只拉普通房间；kind=direct 拉直聊列表。 */
+    list: (kind?: RoomType): Promise<Room[]> =>
+      requestJson<Room[]>(
+        kind === undefined
+          ? "/api/rooms"
+          : `/api/rooms?kind=${encodeURIComponent(kind)}`,
+      ),
     create: (input: RoomCreateInput): Promise<Room> =>
       requestJson<Room>("/api/rooms", {
         method: "POST",

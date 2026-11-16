@@ -5,7 +5,7 @@ use sqlx::SqlitePool;
 use crate::db::Db;
 use crate::domain::agent::Agent;
 use crate::domain::room::{
-    CreateRoomInput, Room, RoomPermissionMode, RoomReplyMode, UpdateRoomInput,
+    CreateRoomInput, Room, RoomPermissionMode, RoomReplyMode, RoomType, UpdateRoomInput,
 };
 use crate::domain::session::RoomMemberSessionSettings;
 use crate::domain::now_ms;
@@ -13,7 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::store::agents::{map_agent_row, AgentRow};
 
 const ROOM_COLUMNS: &str =
-    "id, name, workspace_dir, workspace_dirs, moderator_agent_id, reply_mode, discussion_max_rounds, permission_mode, created_at";
+    "id, name, workspace_dir, workspace_dirs, moderator_agent_id, reply_mode, discussion_max_rounds, permission_mode, created_at, room_type";
 
 #[derive(Debug, Clone)]
 pub struct RoomStore {
@@ -31,68 +31,47 @@ impl RoomStore {
 
     /// 房间与成员在同一事务内写入，避免出现半初始化房间。
     pub async fn create(&self, input: CreateRoomInput) -> AppResult<Room> {
-        let created_at = now_ms();
-        let mut member_ids = input.member_ids;
-        member_ids.sort_unstable();
-        member_ids.dedup();
-
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        let workspace_dirs = if input.workspace_dirs.is_empty() {
-            vec![input.workspace_dir.clone()]
-        } else {
-            input.workspace_dirs
-        };
-        let workspace_dirs_json =
-            serde_json::to_string(&workspace_dirs).map_err(|error| {
-                AppError::with_source(
-                    crate::error::ErrorCode::InternalError,
-                    "无法序列化房间工作目录",
-                    error,
-                )
-            })?;
-        let result = sqlx::query(
-            "INSERT INTO rooms
-               (name, workspace_dir, workspace_dirs, moderator_agent_id, reply_mode,
-                discussion_max_rounds, permission_mode, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&input.name)
-        .bind(&input.workspace_dir)
-        .bind(&workspace_dirs_json)
-        .bind(input.moderator_agent_id)
-        .bind(input.reply_mode.as_str())
-        .bind(input.discussion_max_rounds)
-        .bind(input.permission_mode.as_str())
-        .bind(created_at)
-        .execute(&mut *tx)
-        .await?;
-        let id = result.last_insert_rowid();
-
-        for agent_id in &member_ids {
-            sqlx::query(
-                "INSERT INTO room_members (room_id, agent_id, reuse_session)
-                 VALUES (?, ?, 1)",
-            )
-            .bind(id)
-            .bind(agent_id)
-            .execute(&mut *tx)
-            .await?;
-        }
+        let room = insert_room(&mut tx, input, now_ms()).await?;
         tx.commit().await?;
+        Ok(room)
+    }
 
-        Ok(Room {
-            id,
-            name: input.name,
-            workspace_dir: input.workspace_dir,
-            workspace_dirs,
-            moderator_agent_id: input.moderator_agent_id,
-            member_ids,
-            reply_mode: input.reply_mode,
-            discussion_max_rounds: input.discussion_max_rounds,
-            permission_mode: input.permission_mode,
-            created_at,
-            last_activity_at: None,
-        })
+    /// 直聊幂等创建：存在性检查与插入共享同一个 IMMEDIATE 事务。
+    ///
+    /// 并发请求在写锁上排队，后到者能看到先提交的房间并直接复用，
+    /// 不会为同一智能体插入第二个直聊。
+    pub async fn create_direct_if_absent(
+        &self,
+        agent_id: i64,
+        input: CreateRoomInput,
+    ) -> AppResult<(Room, bool)> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let existing = sqlx::query_as::<_, RoomRow>(&format!(
+            "SELECT {ROOM_COLUMNS} FROM rooms
+              WHERE room_type = 'direct'
+                AND id IN (SELECT room_id FROM room_members WHERE agent_id = ?)
+              ORDER BY id
+              LIMIT 1"
+        ))
+        .bind(agent_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(row) = existing {
+            let member_ids = sqlx::query_scalar::<_, i64>(
+                "SELECT agent_id FROM room_members WHERE room_id = ? ORDER BY agent_id",
+            )
+            .bind(row.id)
+            .fetch_all(&mut *tx)
+            .await?;
+            let room = map_room_row(row, member_ids)?;
+            tx.commit().await?;
+            return Ok((room, false));
+        }
+
+        let room = insert_room(&mut tx, input, now_ms()).await?;
+        tx.commit().await?;
+        Ok((room, true))
     }
 
     pub async fn get_by_id(&self, id: i64) -> AppResult<Option<Room>> {
@@ -200,6 +179,7 @@ impl RoomStore {
             workspace_dir,
             workspace_dirs,
             moderator_agent_id,
+            room_type: existing.room_type,
             member_ids: existing.member_ids,
             reply_mode,
             discussion_max_rounds,
@@ -386,6 +366,84 @@ impl RoomStore {
             .collect()
     }
 
+    /// 按房间类型列出（复用 list 的成员/活动时间聚合）。
+    pub async fn list_by_kind(&self, room_type: RoomType) -> AppResult<Vec<Room>> {
+        let rows = sqlx::query_as::<_, RoomRow>(&format!(
+            "SELECT {ROOM_COLUMNS} FROM rooms WHERE room_type = ? ORDER BY id"
+        ))
+        .bind(room_type.as_str())
+        .fetch_all(self.pool())
+        .await?;
+
+        let links = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT room_id, agent_id FROM room_members ORDER BY room_id, agent_id",
+        )
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut member_ids_by_room: std::collections::HashMap<i64, Vec<i64>> =
+            std::collections::HashMap::new();
+        for (room_id, agent_id) in links {
+            member_ids_by_room.entry(room_id).or_default().push(agent_id);
+        }
+
+        let activities = sqlx::query_as::<_, (i64, Option<i64>)>(
+            "SELECT room_id, MAX(created_at) FROM messages GROUP BY room_id",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        let activity_by_room: std::collections::HashMap<i64, i64> = activities
+            .into_iter()
+            .filter_map(|(room_id, last)| last.map(|value| (room_id, value)))
+            .collect();
+
+        rows.into_iter()
+            .map(|row| {
+                let id = row.id;
+                let mut room = map_room_row(
+                    row,
+                    member_ids_by_room.get(&id).cloned().unwrap_or_default(),
+                )?;
+                room.last_activity_at = activity_by_room.get(&id).copied();
+                Ok(room)
+            })
+            .collect::<AppResult<Vec<_>>>()
+            .map(|rooms| {
+                // 直聊与成员一一对应；成员被清空的孤儿房间不可路由也不可清理，不对外展示。
+                rooms
+                    .into_iter()
+                    .filter(|room| {
+                        room_type != RoomType::Direct || !room.member_ids.is_empty()
+                    })
+                    .collect()
+            })
+    }
+
+    /// 智能体的直聊房间（至多一个）；按 agent 成员关系反查。
+    pub async fn get_direct_for_agent(&self, agent_id: i64) -> AppResult<Option<Room>> {
+        Ok(self.list_direct_for_agent(agent_id).await?.into_iter().next())
+    }
+
+    /// 智能体的全部直聊房间；正常至多一个，历史并发残留可能有多条。
+    pub async fn list_direct_for_agent(&self, agent_id: i64) -> AppResult<Vec<Room>> {
+        let rows = sqlx::query_as::<_, RoomRow>(&format!(
+            "SELECT {ROOM_COLUMNS} FROM rooms
+              WHERE room_type = 'direct'
+                AND id IN (SELECT room_id FROM room_members WHERE agent_id = ?)
+              ORDER BY id"
+        ))
+        .bind(agent_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut rooms = Vec::with_capacity(rows.len());
+        for row in rows {
+            let member_ids = self.member_ids_of(row.id).await?;
+            rooms.push(map_room_row(row, member_ids)?);
+        }
+        Ok(rooms)
+    }
+
     /// 房间成员及其人设；按 agent id 升序，供 @ 提及解析使用。
     pub async fn list_members(&self, room_id: i64) -> AppResult<Vec<Agent>> {
         let rows = sqlx::query_as::<_, AgentRow>(&format!(
@@ -446,6 +504,7 @@ struct RoomRow {
     discussion_max_rounds: i64,
     permission_mode: String,
     created_at: i64,
+    room_type: String,
 }
 
 fn map_room_row(row: RoomRow, member_ids: Vec<i64>) -> AppResult<Room> {
@@ -458,6 +517,9 @@ fn map_room_row(row: RoomRow, member_ids: Vec<i64>) -> AppResult<Room> {
                 row.permission_mode
             ))
         })?;
+    let room_type = RoomType::parse(&row.room_type).map_err(|_| {
+        AppError::internal(format!("rooms.room_type 非法：{}", row.room_type))
+    })?;
 
     let mut workspace_dirs: Vec<String> = row
         .workspace_dirs
@@ -484,5 +546,74 @@ fn map_room_row(row: RoomRow, member_ids: Vec<i64>) -> AppResult<Room> {
         permission_mode,
         created_at: row.created_at,
         last_activity_at: None,
+        room_type,
+    })
+}
+
+/// 在调用方事务内写入房间行与成员，供创建与直聊幂等创建复用。
+async fn insert_room(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    input: CreateRoomInput,
+    created_at: i64,
+) -> AppResult<Room> {
+    let mut member_ids = input.member_ids;
+    member_ids.sort_unstable();
+    member_ids.dedup();
+
+    let workspace_dirs = if input.workspace_dirs.is_empty() {
+        vec![input.workspace_dir.clone()]
+    } else {
+        input.workspace_dirs
+    };
+    let workspace_dirs_json = serde_json::to_string(&workspace_dirs).map_err(|error| {
+        AppError::with_source(
+            crate::error::ErrorCode::InternalError,
+            "无法序列化房间工作目录",
+            error,
+        )
+    })?;
+    let result = sqlx::query(
+        "INSERT INTO rooms
+           (name, workspace_dir, workspace_dirs, moderator_agent_id, reply_mode,
+            discussion_max_rounds, permission_mode, created_at, room_type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&input.name)
+    .bind(&input.workspace_dir)
+    .bind(&workspace_dirs_json)
+    .bind(input.moderator_agent_id)
+    .bind(input.reply_mode.as_str())
+    .bind(input.discussion_max_rounds)
+    .bind(input.permission_mode.as_str())
+    .bind(created_at)
+    .bind(input.room_type.as_str())
+    .execute(&mut **tx)
+    .await?;
+    let id = result.last_insert_rowid();
+
+    for agent_id in &member_ids {
+        sqlx::query(
+            "INSERT INTO room_members (room_id, agent_id, reuse_session)
+             VALUES (?, ?, 1)",
+        )
+        .bind(id)
+        .bind(agent_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    Ok(Room {
+        id,
+        name: input.name,
+        workspace_dir: input.workspace_dir,
+        workspace_dirs,
+        moderator_agent_id: input.moderator_agent_id,
+        member_ids,
+        reply_mode: input.reply_mode,
+        discussion_max_rounds: input.discussion_max_rounds,
+        permission_mode: input.permission_mode,
+        created_at,
+        last_activity_at: None,
+        room_type: input.room_type,
     })
 }

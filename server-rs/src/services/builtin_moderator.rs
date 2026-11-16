@@ -65,10 +65,15 @@ impl BuiltinModeratorService {
     /// 确保内置主持人存在，并把它加入所有现有房间、设为唯一主持人。
     ///
     /// 已有自定义主持人保留为普通成员；房间的 moderator 统一指向内置主持人。
+    /// 直聊房间（room_type=direct）没有主持人，也不参与回填。
     pub async fn ensure_and_backfill(&self) -> AppResult<Agent> {
         let moderator = self.ensure().await?;
 
-        for room in self.rooms.list().await? {
+        for room in self
+            .rooms
+            .list_by_kind(crate::domain::room::RoomType::Group)
+            .await?
+        {
             self.rooms.add_member(room.id, moderator.id).await?;
             if room.moderator_agent_id != Some(moderator.id) {
                 let mut patch = crate::domain::room::UpdateRoomInput::default();

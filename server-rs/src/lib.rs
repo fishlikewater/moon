@@ -153,12 +153,14 @@ impl AppState {
             session_service.clone(),
             custom_harness_store.clone(),
             api_provider_store.clone(),
+            room_store.clone(),
         ));
         let room_service = Arc::new(RoomService::new(
             room_store.clone(),
             agent_store.clone(),
             builtin_moderator,
             session_service.clone(),
+            storage_root.clone(),
         ));
 
         let broadcast: BroadcastFn = {

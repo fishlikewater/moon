@@ -615,7 +615,7 @@ mod tests {
     use super::*;
     use crate::domain::agent::{BuiltinAgentRole, HarnessKind};
     use crate::domain::collaboration::CollaborationStatus;
-    use crate::domain::room::{Room, RoomPermissionMode, RoomReplyMode};
+    use crate::domain::room::{Room, RoomPermissionMode, RoomReplyMode, RoomType};
 
     fn agent(id: i64, name: &str, role: Option<BuiltinAgentRole>) -> Agent {
         Agent {
@@ -644,6 +644,7 @@ mod tests {
             permission_mode: RoomPermissionMode::Auto,
             created_at: 1,
             last_activity_at: None,
+            room_type: RoomType::Group,
         }
     }
 

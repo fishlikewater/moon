@@ -11,6 +11,7 @@ function room(id: number, overrides: Partial<Room> = {}): Room {
   return {
     id,
     name: `房间 ${id}`,
+    roomType: "group",
     workspaceDir: "C:/ws",
     workspaceDirs: ["C:/ws"],
     moderatorAgentId: null,

@@ -20,6 +20,7 @@ function room(id: number, createdAt: number): Room {
   return {
     id,
     name: `房间 ${id}`,
+    roomType: "group",
     workspaceDir: `E:/tmp/room-${id}`,
     workspaceDirs: [`E:/tmp/room-${id}`],
     moderatorAgentId: null,

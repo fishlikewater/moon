@@ -4,12 +4,13 @@
 //! 且主持人固定为内置主持人；客户端不能手动指定或更换主持人。
 //! 三条都在服务层强制，路由层不做业务判断。
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::Value;
 
 use crate::domain::room::{
-    CreateRoomInput, Room, RoomPermissionMode, RoomReplyMode, UpdateRoomInput,
+    CreateRoomInput, Room, RoomPermissionMode, RoomReplyMode, RoomType, UpdateRoomInput,
     DEFAULT_ROOM_DISCUSSION_ROUNDS, DEFAULT_ROOM_PERMISSION_MODE,
     MAX_ROOM_DISCUSSION_ROUNDS, MIN_ROOM_DISCUSSION_ROUNDS,
 };
@@ -21,11 +22,15 @@ use crate::services::{
 };
 use crate::store::{AgentStore, RoomStore};
 
+/// 直聊沙盒目录名：`{storage_root}/direct-workspaces/direct-{agent_id}`。
+const DIRECT_WORKSPACES_DIR: &str = "direct-workspaces";
+
 pub struct RoomService {
     rooms: RoomStore,
     agents: AgentStore,
     builtin_moderator: BuiltinModeratorService,
     sessions: Arc<SessionService>,
+    storage_root: PathBuf,
 }
 
 impl RoomService {
@@ -34,21 +39,42 @@ impl RoomService {
         agents: AgentStore,
         builtin_moderator: BuiltinModeratorService,
         sessions: Arc<SessionService>,
+        storage_root: impl Into<PathBuf>,
     ) -> Self {
         Self {
             rooms,
             agents,
             builtin_moderator,
             sessions,
+            storage_root: storage_root.into(),
         }
     }
 
+    /// 普通房间列表；直聊通过 `list_direct` 单独获取。
     pub async fn list(&self) -> AppResult<Vec<Room>> {
-        self.rooms.list().await
+        self.rooms.list_by_kind(RoomType::Group).await
+    }
+
+    /// 直聊房间列表（侧栏「对话」分组）。
+    pub async fn list_direct(&self) -> AppResult<Vec<Room>> {
+        self.rooms.list_by_kind(RoomType::Direct).await
     }
 
     pub async fn create(&self, input: Value) -> AppResult<Room> {
         let body = require_body(input)?;
+        // 直聊只能经专用端点创建（自动沙盒与幂等规则在 ensure_direct_chat）。
+        if let Some(raw_type) = body.get("roomType") {
+            let room_type = RoomType::parse(
+                raw_type
+                    .as_str()
+                    .ok_or_else(|| AppError::validation("roomType 必须是字符串"))?,
+            )?;
+            if room_type != RoomType::Group {
+                return Err(AppError::validation(
+                    "直聊房间请使用智能体的直聊入口创建",
+                ));
+            }
+        }
         let name = require_non_empty_string(body.get("name"), "name")?;
         let (workspace_dir, workspace_dirs) =
             require_workspace_dirs(body.get("workspaceDirs"), body.get("workspaceDir")).await?;
@@ -95,18 +121,107 @@ impl RoomService {
                 reply_mode,
                 discussion_max_rounds,
                 permission_mode,
+                room_type: RoomType::Group,
             })
             .await
     }
 
+    /// 直聊房间的只读查询；未创建时返回 `None`。
+    pub async fn get_direct_chat(&self, raw_agent_id: &str) -> AppResult<Option<Room>> {
+        let agent_id = parse_id(raw_agent_id)?;
+        self.require_agent(agent_id).await?;
+        self.rooms.get_direct_for_agent(agent_id).await
+    }
+
+    /// 幂等创建直聊房间：已存在时直接返回；新建时自动分配独立沙盒工作区。
+    ///
+    /// 房间名即展示名（`与 {agent.name} 对话`），会话总览等按房间名显示
+    /// 的地方无需区分；直聊不带主持人、固定 mentions 回复模式与 auto 权限。
+    pub async fn ensure_direct_chat(&self, raw_agent_id: &str) -> AppResult<(Room, bool)> {
+        let agent_id = parse_id(raw_agent_id)?;
+        let Some(agent) = self.agents.get_by_id(agent_id).await? else {
+            return Err(AppError::not_found(format!(
+                "智能体不存在：{agent_id}"
+            )));
+        };
+        if let Some(existing) = self.rooms.get_direct_for_agent(agent_id).await? {
+            return Ok((existing, false));
+        }
+
+        let workspace = self
+            .storage_root
+            .join(DIRECT_WORKSPACES_DIR)
+            .join(format!("direct-{agent_id}"));
+        let workspace_dir = workspace.to_string_lossy().into_owned();
+        if let Err(error) = std::fs::create_dir_all(&workspace) {
+            return Err(AppError::with_source(
+                crate::error::ErrorCode::InternalError,
+                format!("无法创建直聊工作区：{}", workspace.display()),
+                error,
+            ));
+        }
+
+        let created = self
+            .rooms
+            .create_direct_if_absent(
+                agent_id,
+                CreateRoomInput {
+                    name: format!("与 {} 对话", agent.name),
+                    workspace_dir: workspace_dir.clone(),
+                    workspace_dirs: vec![workspace_dir],
+                    moderator_agent_id: None,
+                    member_ids: vec![agent_id],
+                    reply_mode: RoomReplyMode::Mentions,
+                    discussion_max_rounds: 1,
+                    permission_mode: DEFAULT_ROOM_PERMISSION_MODE,
+                    room_type: RoomType::Direct,
+                },
+            )
+            .await;
+        match created {
+            Ok(room) => Ok(room),
+            Err(error) => {
+                // 并发请求共享同一沙盒路径；只有确认直聊仍不存在时才回收目录，
+                // 避免失败方删掉已成功创建的房间工作区。
+                let succeeded = matches!(
+                    self.rooms.get_direct_for_agent(agent_id).await,
+                    Ok(Some(_))
+                );
+                if !succeeded {
+                    let _ = std::fs::remove_dir_all(&workspace);
+                }
+                Err(error)
+            }
+        }
+    }
+
     pub async fn update(&self, raw_id: &str, input: Value) -> AppResult<Room> {
         let id = parse_id(raw_id)?;
-        self.require_room(id).await?;
+        let room = self.require_room(id).await?;
         let body = require_body(input)?;
         let mut patch = UpdateRoomInput::default();
+        let direct = room.room_type == RoomType::Direct;
 
         if body.contains_key("moderatorAgentId") {
             return Err(AppError::validation("主持人由系统内置，不支持修改"));
+        }
+        // 直聊的单成员与展示名由系统维护；只开放权限与工作目录，
+        // 避免通用 PATCH 把主持人/回复模式等房间语义写进直聊。
+        if direct {
+            let illegal: Vec<&String> = body
+                .keys()
+                .filter(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "permissionMode" | "workspaceDir" | "workspaceDirs"
+                    )
+                })
+                .collect();
+            if !illegal.is_empty() {
+                return Err(AppError::constraint(
+                    "直聊房间只支持调整权限模式与工作目录",
+                ));
+            }
         }
         if let Some(value) = body.get("name") {
             patch.name = Some(require_non_empty_string(Some(value), "name")?);
@@ -128,10 +243,13 @@ impl RoomService {
             patch.permission_mode = Some(parse_permission_mode(value)?);
         }
 
-        // 修复历史房间：确保内置主持人仍是成员并担任主持人。
-        let moderator = self.builtin_moderator.ensure().await?;
-        self.rooms.add_member(id, moderator.id).await?;
-        patch.moderator_agent_id = Some(Some(moderator.id));
+        // 修复历史房间：确保内置主持人仍是成员并担任主持人；直聊无主持人，
+        // 不能走这条回填，否则会破坏「单成员、无主持人」不变量。
+        if !direct {
+            let moderator = self.builtin_moderator.ensure().await?;
+            self.rooms.add_member(id, moderator.id).await?;
+            patch.moderator_agent_id = Some(Some(moderator.id));
+        }
 
         self.rooms
             .update(id, patch)
@@ -163,6 +281,9 @@ impl RoomService {
 
     pub async fn add_member(&self, raw_room_id: &str, raw_agent_id: &str) -> AppResult<Room> {
         let room = self.require_room(parse_id(raw_room_id)?).await?;
+        if room.room_type == RoomType::Direct {
+            return Err(AppError::constraint("直聊房间不支持添加成员"));
+        }
         let agent_id = parse_id(raw_agent_id)?;
         self.require_agent(agent_id).await?;
 
@@ -176,6 +297,11 @@ impl RoomService {
         raw_agent_id: &str,
     ) -> AppResult<Room> {
         let room = self.require_room(parse_id(raw_room_id)?).await?;
+        if room.room_type == RoomType::Direct {
+            return Err(AppError::constraint(
+                "直聊房间不支持移除成员；删除智能体即可清理直聊",
+            ));
+        }
         let agent_id = parse_id(raw_agent_id)?;
         let agent = self.agents.get_by_id(agent_id).await?;
 

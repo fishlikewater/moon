@@ -11,7 +11,7 @@ use sqlx::{Row, SqlitePool, Transaction};
 
 use crate::error::AppResult;
 
-pub const LATEST_VERSION: i64 = 24;
+pub const LATEST_VERSION: i64 = 25;
 
 enum Step {
     /// 一段可包含多条语句的 DDL/DML。
@@ -338,7 +338,25 @@ const MIGRATIONS: &[Migration] = &[
         version: 24,
         steps: &[Step::Sql(V24_API_PROVIDERS)],
     },
+    Migration {
+        // v25：房间类型；旧数据全部落为 group（普通房间），直聊为 direct。
+        // 直聊按成员反查（get_direct_for_agent）走 room_members.agent_id，
+        // 复合主键 (room_id, agent_id) 不能覆盖该方向，补单列索引避免全表扫描。
+        version: 25,
+        steps: &[
+            Step::AddColumn {
+                table: "rooms",
+                column: "room_type",
+                definition: "TEXT NOT NULL DEFAULT 'group' CHECK (room_type IN ('group', 'direct'))",
+            },
+            Step::Sql(V25_ROOM_MEMBERS_AGENT_INDEX),
+        ],
+    },
 ];
+
+/// v25：直聊反查索引；`IF NOT EXISTS` 保证与 AddColumn 一样可重放。
+const V25_ROOM_MEMBERS_AGENT_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_room_members_agent ON room_members (agent_id);";
 
 /// v24：模型供应商注册表（一期：供应商 CRUD + ACP env 注入桥接）。
 ///

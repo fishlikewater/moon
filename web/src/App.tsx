@@ -6,9 +6,13 @@ import {
   Route,
   Routes,
   useLocation,
+  useParams,
 } from "react-router-dom";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
+import { api } from "./api/client";
 import AgentsPage from "./pages/AgentsPage";
+import DirectChatEntryPage from "./pages/DirectChatEntryPage";
+import DirectChatPage from "./pages/DirectChatPage";
 import { isDesktopShell } from "./desktopShell";
 import { useTheme } from "./useTheme";
 import AgentBuilderPage from "./pages/AgentBuilderPage";
@@ -336,6 +340,56 @@ function useNarrowShell(): boolean {
 }
 
 /**
+ * `/rooms/:id` 的路由级分派：直聊是隐藏特制房间，不能渲染房间页。
+ *
+ * 只读判断：直聊列表命中即重定向到 `/chat/room/:roomId`；其它情况交给
+ * RoomPage 原样处理（普通房间或不存在，由房间页自身展示错误）。
+ */
+function RoomKindRedirect() {
+  const { id } = useParams<{ id: string }>();
+  const roomId =
+    id !== undefined && /^\d+$/.test(id) && Number(id) > 0 ? Number(id) : null;
+  const [kind, setKind] = useState<"loading" | "group" | "direct">("loading");
+
+  useEffect(() => {
+    if (roomId === null) {
+      setKind("group");
+      return;
+    }
+    let cancelled = false;
+    setKind("loading");
+    void api.rooms
+      .list("direct")
+      .then((rooms) => {
+        if (!cancelled) {
+          setKind(rooms.some((room) => room.id === roomId) ? "direct" : "group");
+        }
+      })
+      .catch(() => {
+        // 查询失败按普通房间渲染，由房间页展示自身错误。
+        if (!cancelled) {
+          setKind("group");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId]);
+
+  if (kind === "loading") {
+    return (
+      <section className="page">
+        <p className="muted">加载中…</p>
+      </section>
+    );
+  }
+  if (kind === "direct" && roomId !== null) {
+    return <Navigate to={`/chat/room/${roomId}`} replace />;
+  }
+  return <RoomPage />;
+}
+
+/**
  * 应用外壳：左侧导航 + 顶部状态栏 + 独立滚动主区。
  *
  * 桌面宽度侧栏常驻并可折叠为图标栏；窄窗口退化为可关闭抽屉。
@@ -505,7 +559,9 @@ function AppShell() {
             <Route path="/agents/builder" element={<AgentBuilderPage />} />
             <Route path="/harnesses" element={<HarnessesPage />} />
             <Route path="/rooms" element={<RoomsPage />} />
-            <Route path="/rooms/:id" element={<RoomPage />} />
+            <Route path="/rooms/:id" element={<RoomKindRedirect />} />
+            <Route path="/chat/room/:roomId" element={<DirectChatPage />} />
+            <Route path="/chat/:agentId" element={<DirectChatEntryPage />} />
             <Route path="/tasks" element={<TasksPage />} />
             <Route path="/sessions" element={<SessionsPage />} />
             <Route path="/settings" element={<SettingsPage />} />

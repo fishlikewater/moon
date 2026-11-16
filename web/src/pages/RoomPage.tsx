@@ -5,7 +5,6 @@ import {
   Suspense,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -23,10 +22,8 @@ import type {
   Discussion,
   Message,
   MessageAttachment,
-  MessageStatus,
   QueueSnapshot,
   Room,
-  RoomEvent,
   RoomFiles,
 } from "@moon/shared";
 import { api, errorMessage } from "../api/client";
@@ -101,7 +98,7 @@ import {
   summarizeQuote,
 } from "../components/discussionView";
 import { formatModeratorTranscript } from "../components/moderatorProtocol";
-import { useRoomEvents } from "../ws/useRoomEvents";
+import { useRoomChat } from "../hooks/useRoomChat";
 import {
   cleanupPreview,
   parseKeepRecent,
@@ -241,13 +238,6 @@ function ArrowUpIcon() {
   );
 }
 
-interface ActiveRun {
-  runId: number;
-  agentId: number;
-  messageId: number;
-  startedAt: number;
-}
-
 interface MemberView {
   id: number;
   name: string;
@@ -320,60 +310,8 @@ export function findCompletionTrigger(
   return null;
 }
 
-/** 消息状态优先级：终态（final/failed）高于流式中的占位消息。 */
-const MESSAGE_STATUS_PRIORITY: Record<MessageStatus, number> = {
-  streaming: 0,
-  final: 1,
-  failed: 1,
-};
-
-/**
- * 同一 id 的两份快照取“更新”的一份：终态优先于 streaming，
- * 同状态取内容更长的一份（流式增量只会增长）。
- */
-function pickNewerMessage(left: Message, right: Message): Message {
-  const leftPriority = MESSAGE_STATUS_PRIORITY[left.status];
-  const rightPriority = MESSAGE_STATUS_PRIORITY[right.status];
-  if (leftPriority !== rightPriority) {
-    return rightPriority > leftPriority ? right : left;
-  }
-  return right.content.length >= left.content.length ? right : left;
-}
-
-/**
- * 合并两份消息快照：按 id 去重、按 seq 升序。
- *
- * 历史加载完成时用它与已到达的实时消息合并，而不是直接覆盖状态；
- * 同一 id 的优先级规则见 `pickNewerMessage`。
- */
-export function mergeMessages(
-  current: readonly Message[],
-  incoming: readonly Message[],
-): Message[] {
-  const byId = new Map<number, Message>();
-  for (const message of current) {
-    byId.set(message.id, message);
-  }
-  for (const message of incoming) {
-    const existing = byId.get(message.id);
-    byId.set(
-      message.id,
-      existing === undefined ? message : pickNewerMessage(existing, message),
-    );
-  }
-  return [...byId.values()].sort((a, b) => a.seq - b.seq);
-}
-
-/**
- * 事件是否属于当前房间。契约要求所有事件都带 `roomId`，
- * 切换房间后旧连接可能仍投递事件，必须在此丢弃。
- */
-export function isEventForRoom(
-  event: RoomEvent,
-  roomId: number | null,
-): boolean {
-  return roomId !== null && event.roomId === roomId;
-}
+// 合并与房间过滤属于聊天状态机（useRoomChat），这里保留原导出位置。
+export { isEventForRoom, mergeMessages } from "../hooks/useRoomChat";
 
 /** 消息头的时间只保留时分，长对话里按时间扫描更快。 */
 function formatMessageTime(ms: number): string {
@@ -925,8 +863,6 @@ export default function RoomPage() {
 
   const [room, setRoom] = useState<Room | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [activeRuns, setActiveRuns] = useState<Record<number, ActiveRun>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -956,15 +892,7 @@ export default function RoomPage() {
   const [agentFilter, setAgentFilter] = useState<number | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [permissionSaving, setPermissionSaving] = useState(false);
-  const [stickToBottom, setStickToBottom] = useState(true);
-  const [unseenCount, setUnseenCount] = useState(0);
-  const [runDurations, setRunDurations] = useState<Record<number, number>>({});
-  const [runIdByMessageId, setRunIdByMessageId] = useState<
-    Record<number, number>
-  >({});
-  const runIdByMessageIdRef = useRef<Record<number, number>>({});
   const [now, setNow] = useState(() => Date.now());
-  const [announcement, setAnnouncement] = useState("");
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const [keepRecentInput, setKeepRecentInput] = useState("0");
@@ -975,7 +903,6 @@ export default function RoomPage() {
     null,
   );
   const [contextLoading, setContextLoading] = useState(false);
-  const [contextRefreshKey, setContextRefreshKey] = useState(0);
   const [queue, setQueue] = useState<QueueSnapshot | null>(null);
   const [queueError, setQueueError] = useState(false);
   const [queueNotice, setQueueNotice] = useState<string | null>(null);
@@ -983,10 +910,8 @@ export default function RoomPage() {
     number | null
   >(null);
   const [queuePauseBusy, setQueuePauseBusy] = useState(false);
-  const [queueRefreshKey, setQueueRefreshKey] = useState(0);
   const [files, setFiles] = useState<RoomFiles | null>(null);
   const [filesError, setFilesError] = useState<string | null>(null);
-  const [filesRefreshKey, setFilesRefreshKey] = useState(0);
   const [sideTab, setSideTab] = useState<RoomSideTab>(() => readRoomSideTab());
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
@@ -994,9 +919,6 @@ export default function RoomPage() {
   const [flashMessageId, setFlashMessageId] = useState<number | null>(null);
   const [messageNotice, setMessageNotice] = useState<string | null>(null);
 
-  const messageListRef = useRef<HTMLDivElement | null>(null);
-  const stickRef = useRef(true);
-  const activeRunsRef = useRef<Record<number, ActiveRun>>({});
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const cleanupInputRef = useRef<HTMLInputElement | null>(null);
   const sideCloseRef = useRef<HTMLButtonElement | null>(null);
@@ -1005,12 +927,45 @@ export default function RoomPage() {
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentKeyRef = useRef(0);
   const pendingAttachmentsRef = useRef<PendingAttachment[]>([]);
-  const messagesRef = useRef<Message[]>([]);
   const reactionBusyRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
+  // 聊天状态机（消息/运行/实时事件）由 hook 承担；讨论与委派快照仍由本页持有。
+  const {
+    messages,
+    setMessages,
+    messagesRef,
+    activeRuns,
+    runDurations,
+    runIdByMessageId,
+    announcement,
+    unseenCount,
+    stickToBottom,
+    runningCount,
+    contextRefreshKey,
+    queueRefreshKey,
+    filesRefreshKey,
+    historyLoading,
+    connected,
+    refreshQueue,
+    refreshFiles,
+    listRef: messageListRef,
+    onListScroll: handleMessageListScroll,
+    onMessageLayout: handleMessageLayoutChange,
+    jumpToLatest,
+    resetStick,
+    mergeMessage,
+    reloadMessages,
+  } = useRoomChat(roomId, {
+    onDiscussion: setDiscussion,
+    // 委派快照按 updatedAt 丢弃迟到广播，与初始加载保持同一规则。
+    onCollaboration: (batch) =>
+      setCollaboration((previous) =>
+        previous === null || batch.updatedAt >= previous.updatedAt
+          ? batch
+          : previous,
+      ),
+    onError: setError,
+  });
 
   // 复制与跳转高亮都是短时反馈，计时器随状态清理。
   useEffect(() => {
@@ -1094,7 +1049,6 @@ export default function RoomPage() {
       setLoading(false);
       setError("非法的房间地址");
       setRoom(null);
-      setMessages([]);
       return;
     }
 
@@ -1102,12 +1056,6 @@ export default function RoomPage() {
     setLoading(true);
     setError(null);
     setRoom(null);
-    setMessages([]);
-    setActiveRuns({});
-    activeRunsRef.current = {};
-    setRunDurations({});
-    setRunIdByMessageId({});
-    runIdByMessageIdRef.current = {};
     setCleanupOpen(false);
     setKeepRecentInput("0");
     setCleaning(false);
@@ -1131,26 +1079,16 @@ export default function RoomPage() {
     setStoppingCollaboration(false);
     setMessageFilter("all");
     setAgentFilter(null);
-    setUnseenCount(0);
-    setAnnouncement("");
-    stickRef.current = true;
-    setStickToBottom(true);
 
     void (async () => {
       try {
-        const [
-          roomList,
-          agentList,
-          history,
-          latestDiscussion,
-          latestCollaboration,
-        ] = await Promise.all([
-          api.rooms.list(),
-          api.agents.list(),
-          api.messages.list(roomId),
-          api.discussions.latest(roomId),
-          api.collaborations.latest(roomId),
-        ]);
+        const [roomList, agentList, latestDiscussion, latestCollaboration] =
+          await Promise.all([
+            api.rooms.list(),
+            api.agents.list(),
+            api.discussions.latest(roomId),
+            api.collaborations.latest(roomId),
+          ]);
         if (cancelled) {
           return;
         }
@@ -1166,8 +1104,6 @@ export default function RoomPage() {
               ? latestCollaboration
               : previous,
         );
-        // 历史快照与已到达的实时消息合并，避免覆盖流式增量/终态。
-        setMessages((previous) => mergeMessages(previous, history));
       } catch (cause) {
         if (!cancelled) {
           setError(errorMessage(cause));
@@ -1183,174 +1119,6 @@ export default function RoomPage() {
       cancelled = true;
     };
   }, [roomId]);
-
-  /** 按 id 合并：已存在则按状态优先级取更新的一份，否则按 seq 插入。 */
-  const mergeMessage = useCallback((incoming: Message) => {
-    setMessages((previous) => mergeMessages(previous, [incoming]));
-  }, []);
-
-  /** 历史清理后整体重拉；清理期间房间被判定为空闲，不存在流式消息。 */
-  const reloadMessages = useCallback(async () => {
-    if (roomId === null) {
-      return;
-    }
-    try {
-      setMessages(await api.messages.list(roomId));
-    } catch (cause) {
-      setError(errorMessage(cause));
-    }
-  }, [roomId]);
-
-  const handleEvent = useCallback(
-    (event: RoomEvent) => {
-      // 丢弃跨房间的过期事件：它们不属于当前页面展示的消息列表。
-      if (!isEventForRoom(event, roomId)) {
-        return;
-      }
-
-      // 任务状态变化由任务页展示，聊天面板不消费该事件。
-      if (event.type === "task_changed") {
-        return;
-      }
-
-      // 讨论状态条只消费快照；讨论消息本身仍走 message_final。
-      if (event.type === "discussion_changed") {
-        setDiscussion(event.discussion);
-        return;
-      }
-
-      // 委派批次同样只消费快照；按 updatedAt 丢弃迟到的旧广播。
-      if (event.type === "collaboration_changed") {
-        setCollaboration((previous) =>
-          previous === null || event.batch.updatedAt >= previous.updatedAt
-            ? event.batch
-            : previous,
-        );
-        return;
-      }
-
-      // 运行活动由独立运行详情页消费，房间页不保留活动状态。
-      if (event.type === "run_activity") {
-        return;
-      }
-
-      // 纯聊天历史已清理（可能来自其它标签页），整体重拉列表。
-      if (event.type === "history_cleared") {
-        setContextRefreshKey((key) => key + 1);
-        setQueueRefreshKey((key) => key + 1);
-        setFilesRefreshKey((key) => key + 1);
-        void reloadMessages();
-        return;
-      }
-
-      // 反应只替换目标消息的 reactions，不动正文与运行状态。
-      if (event.type === "message_reactions_changed") {
-        setMessages((previous) =>
-          previous.map((item) =>
-            item.id === event.messageId
-              ? { ...item, reactions: event.reactions }
-              : item,
-          ),
-        );
-        return;
-      }
-
-      if (event.type === "run_started") {
-        const run: ActiveRun = {
-          runId: event.runId,
-          agentId: event.agentId,
-          messageId: event.messageId,
-          startedAt: Date.now(),
-        };
-        activeRunsRef.current = {
-          ...activeRunsRef.current,
-          [event.runId]: run,
-        };
-        setActiveRuns((previous) => ({
-          ...previous,
-          [event.runId]: run,
-        }));
-        setRunIdByMessageId((previous) => ({
-          ...previous,
-          [event.messageId]: event.runId,
-        }));
-        runIdByMessageIdRef.current = {
-          ...runIdByMessageIdRef.current,
-          [event.messageId]: event.runId,
-        };
-        setAnnouncement("成员开始回复");
-        setQueueRefreshKey((key) => key + 1);
-        mergeMessage(event.message);
-        return;
-      }
-
-      // 同一运行进入新阶段：登记新消息，运行状态保持不变。
-      if (event.type === "message_started") {
-        setRunIdByMessageId((previous) => ({
-          ...previous,
-          [event.message.id]: event.runId,
-        }));
-        runIdByMessageIdRef.current = {
-          ...runIdByMessageIdRef.current,
-          [event.message.id]: event.runId,
-        };
-        mergeMessage(event.message);
-        return;
-      }
-
-      if (event.type === "message_delta") {
-        setMessages((previous) =>
-          previous.map((item) =>
-            item.id === event.messageId
-              ? { ...item, content: item.content + event.text }
-              : item,
-          ),
-        );
-        return;
-      }
-
-      // message_final：progress 只落定阶段消息；reply 才结束整个运行。
-      const finishedRunId =
-        event.message.runId ?? runIdByMessageIdRef.current[event.message.id] ?? null;
-      const finishedRun =
-        finishedRunId === null ? undefined : activeRunsRef.current[finishedRunId];
-      if (finishedRun !== undefined && event.message.kind === "reply") {
-        const nextRuns = { ...activeRunsRef.current };
-        delete nextRuns[finishedRunId!];
-        activeRunsRef.current = nextRuns;
-        setRunDurations((previous) => ({
-          ...previous,
-          [finishedRunId!]: Date.now() - finishedRun.startedAt,
-        }));
-        setActiveRuns((previous) => {
-          if (!(finishedRunId! in previous)) {
-            return previous;
-          }
-          const next = { ...previous };
-          delete next[finishedRunId!];
-          return next;
-        });
-      }
-      if (event.message.kind === "reply") {
-        // 用户/系统/成员的任何 final reply 都会进入历史，统一刷新估算。
-        setContextRefreshKey((key) => key + 1);
-        setQueueRefreshKey((key) => key + 1);
-        setFilesRefreshKey((key) => key + 1);
-        if (event.message.senderType === "agent") {
-          setAnnouncement("成员回复已完成");
-          if (!stickRef.current) {
-            setUnseenCount((count) => count + 1);
-          }
-        }
-      }
-      mergeMessage(event.message);
-    },
-    [mergeMessage, reloadMessages, roomId],
-  );
-
-  const { connected } = useRoomEvents(roomId, handleEvent);
-
-  const runningCount = Object.keys(activeRuns).length;
 
   /** 房间内直接切换权限模式；保存成功后用服务端结果回填。 */
   const changePermissionMode = async (mode: Room["permissionMode"]) => {
@@ -1441,50 +1209,10 @@ export default function RoomPage() {
     }
   }, [keepRecentInput, reloadMessages, roomId]);
 
-  const scrollToBottom = useCallback(
-    (behavior: ScrollBehavior = "auto") => {
-      const list = messageListRef.current;
-      if (list === null) {
-        return;
-      }
-      if (behavior === "smooth") {
-        list.scrollTo({ top: list.scrollHeight, behavior });
-        return;
-      }
-      list.scrollTop = list.scrollHeight;
-    },
-    [],
-  );
-
-  // Markdown chunk 加载完成后内容高度会变化；若仍贴底，再滚一次。
-  useEffect(() => {
-    let active = true;
-    void import("../components/MarkdownContent").then(() => {
-      if (!active || !stickRef.current) {
-        return;
-      }
-      scrollToBottom();
-    });
-    return () => {
-      active = false;
-    };
-  }, [scrollToBottom]);
-
-  // messages 每次变化都代表内容高度可能变化；只有用户仍在底部时才跟随。
-  useLayoutEffect(() => {
-    if (!stickRef.current) {
-      return;
-    }
-    scrollToBottom();
-  }, [messages, stickToBottom, scrollToBottom]);
-
   // 切换筛选后回到最新，避免停留在被过滤掉的旧位置。
   useEffect(() => {
-    stickRef.current = true;
-    setStickToBottom(true);
-    setUnseenCount(0);
-    scrollToBottom();
-  }, [messageFilter, agentFilter, scrollToBottom]);
+    resetStick();
+  }, [messageFilter, agentFilter, resetStick]);
 
   useEffect(() => {
     if (runningCount === 0) {
@@ -1494,42 +1222,6 @@ export default function RoomPage() {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [runningCount]);
-
-  // 运行状态条出现或消失会改变列表可视高度；仍在底部时重新贴底。
-  useEffect(() => {
-    if (!stickRef.current) {
-      return;
-    }
-    scrollToBottom();
-  }, [runningCount, scrollToBottom]);
-
-  const handleMessageListScroll = () => {
-    const list = messageListRef.current;
-    if (list === null) {
-      return;
-    }
-    const distance = list.scrollHeight - list.scrollTop - list.clientHeight;
-    const nextStick = distance < 80;
-    stickRef.current = nextStick;
-    setStickToBottom(nextStick);
-    if (nextStick) {
-      setUnseenCount(0);
-    }
-  };
-
-  const jumpToLatest = () => {
-    stickRef.current = true;
-    setStickToBottom(true);
-    setUnseenCount(0);
-    scrollToBottom("smooth");
-  };
-
-  const handleMessageLayoutChange = useCallback(() => {
-    if (!stickRef.current) {
-      return;
-    }
-    scrollToBottom();
-  }, [scrollToBottom]);
 
   const agentNameById = useMemo(() => {
     const map = new Map<number, string>();
@@ -1843,7 +1535,7 @@ export default function RoomPage() {
     setQueueNotice(null);
     try {
       await api.rooms.cancelQueueJob(roomId, jobId);
-      setQueueRefreshKey((key) => key + 1);
+      refreshQueue();
     } catch (cause) {
       // 409：任务已开跑或类型不可取消；保留可见提示。
       setQueueNotice(errorMessage(cause));
@@ -2151,7 +1843,7 @@ export default function RoomPage() {
         replyTo?.id ?? null,
       );
       mergeMessage(userMessage);
-      setQueueRefreshKey((key) => key + 1);
+      refreshQueue();
       setDraft("");
       setReplyTo(null);
       clearPendingAttachments();
@@ -2167,7 +1859,7 @@ export default function RoomPage() {
     }
   };
 
-  if (loading) {
+  if (loading || historyLoading) {
     return (
       <section className="page">
         <p className="muted">加载中…</p>
@@ -3056,7 +2748,7 @@ export default function RoomPage() {
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                onClick={() => setFilesRefreshKey((key) => key + 1)}
+                onClick={() => refreshFiles()}
               >
                 刷新
               </button>

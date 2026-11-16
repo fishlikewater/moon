@@ -12,13 +12,14 @@ use crate::error::{AppError, AppResult};
 use crate::services::rooms::require_workspace_dir_value;
 use crate::services::sessions::SessionService;
 use crate::services::{parse_id, require_body, require_non_empty_string};
-use crate::store::{AgentStore, ApiProviderStore, CustomHarnessStore};
+use crate::store::{AgentStore, ApiProviderStore, CustomHarnessStore, RoomStore};
 
 pub struct AgentService {
     agents: AgentStore,
     sessions: Arc<SessionService>,
     custom_harnesses: CustomHarnessStore,
     api_providers: ApiProviderStore,
+    rooms: RoomStore,
 }
 
 impl AgentService {
@@ -27,12 +28,14 @@ impl AgentService {
         sessions: Arc<SessionService>,
         custom_harnesses: CustomHarnessStore,
         api_providers: ApiProviderStore,
+        rooms: RoomStore,
     ) -> Self {
         Self {
             agents,
             sessions,
             custom_harnesses,
             api_providers,
+            rooms,
         }
     }
 
@@ -188,11 +191,52 @@ impl AgentService {
             ));
         }
 
+        // 直聊与智能体一一对应：先整删直聊（房间行/消息/会话存储/沙盒目录），
+        // 避免留下成员被清空后不可见的孤儿 direct 房间。历史并发残留可能有多条，
+        // 全部清理；相同沙盒路径只删一次。
+        let mut cleaned_workspaces = std::collections::HashSet::new();
+        for direct in self.rooms.list_direct_for_agent(id).await? {
+            self.rooms.delete(direct.id).await?;
+            self.sessions.delete_room_storage(direct.id);
+            if cleaned_workspaces.insert(direct.workspace_dir.clone()) {
+                remove_direct_workspace(&direct.workspace_dir);
+            }
+        }
+
         if self.agents.delete(id).await? {
             // 会话记录已随事务删除；存储目录按智能体整体清理，失败只留下临时目录。
             self.sessions.delete_agent_storage(id);
         }
         Ok(())
+    }
+}
+
+/// 清理直聊沙盒目录；只接受 `.../direct-workspaces/direct-*` 形态的路径，
+/// 其它目录一律不动（防止工作区被改成用户真实目录时误删）。
+fn remove_direct_workspace(workspace_dir: &str) {
+    let path = std::path::Path::new(workspace_dir);
+    let expected_parent = path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .is_some_and(|name| name == "direct-workspaces");
+    let expected_leaf = path
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with("direct-"));
+    if !expected_parent || !expected_leaf {
+        tracing::warn!(
+            workspace = %path.display(),
+            "direct workspace path unexpected; skipping directory cleanup"
+        );
+        return;
+    }
+    if let Err(error) = std::fs::remove_dir_all(path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                workspace = %path.display(),
+                error = %error,
+                "direct workspace cleanup failed"
+            );
+        }
     }
 }
 
@@ -317,5 +361,34 @@ fn parse_model_config(value: Option<&Value>) -> AppResult<Option<ModelConfig>> {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Object(map)) => Ok(Some(map.clone())),
         Some(_) => Err(AppError::validation("modelConfig 必须是对象或 null")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_direct_workspace;
+
+    #[test]
+    fn direct_workspace_cleanup_only_touches_sandbox_leaf() {
+        let root = tempfile::tempdir().unwrap();
+        let sandbox_parent = root.path().join("direct-workspaces");
+        let safe = sandbox_parent.join("direct-7");
+        let unsafe_leaf = sandbox_parent.join("user-project");
+        let outside = root.path().join("real-project");
+        for dir in [&safe, &unsafe_leaf, &outside] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("keep.txt"), b"x").unwrap();
+        }
+
+        remove_direct_workspace(safe.to_str().unwrap());
+        remove_direct_workspace(unsafe_leaf.to_str().unwrap());
+        remove_direct_workspace(outside.to_str().unwrap());
+
+        assert!(!safe.exists(), "direct-* 沙盒目录应在删除智能体时清理");
+        assert!(
+            unsafe_leaf.join("keep.txt").exists(),
+            "direct-workspaces 下的非 direct-* 目录不得删除"
+        );
+        assert!(outside.exists(), "direct-workspaces 之外的目录不得删除");
     }
 }

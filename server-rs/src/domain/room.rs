@@ -4,6 +4,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
 
+/// 房间类型：普通多人房间，或与单个智能体的直聊（隐藏房间）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RoomType {
+    #[default]
+    Group,
+    Direct,
+}
+
+impl RoomType {
+    pub const ALL: [Self; 2] = [Self::Group, Self::Direct];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Group => "group",
+            Self::Direct => "direct",
+        }
+    }
+
+    pub fn parse(value: &str) -> AppResult<Self> {
+        match value {
+            "group" => Ok(Self::Group),
+            "direct" => Ok(Self::Direct),
+            _ => Err(AppError::validation(format!(
+                "roomType 必须是 {} 之一",
+                Self::ALL.map(Self::as_str).join(" | ")
+            ))),
+        }
+    }
+}
+
 /// 房间默认回复模式：仅响应 @ 提及，或由内置主持人接管无 @ 消息。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -98,6 +129,8 @@ pub struct Room {
     pub created_at: i64,
     /// 最近一条消息时间（epoch 毫秒）；无消息为 `None`，仅列表查询注入。
     pub last_activity_at: Option<i64>,
+    /// 房间类型；直聊房间不进入普通房间列表与主持人回填。
+    pub room_type: RoomType,
 }
 
 /// store 层创建参数。
@@ -111,6 +144,7 @@ pub struct CreateRoomInput {
     pub reply_mode: RoomReplyMode,
     pub discussion_max_rounds: i64,
     pub permission_mode: RoomPermissionMode,
+    pub room_type: RoomType,
 }
 
 /// 局部更新：未传入的字段保持原值，`moderator_agent_id: Some(None)` 表示清空。

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use moon_server::db::Db;
 use moon_server::domain::room::{
-    CreateRoomInput, RoomReplyMode, DEFAULT_ROOM_PERMISSION_MODE,
+    CreateRoomInput, RoomReplyMode, RoomType, DEFAULT_ROOM_PERMISSION_MODE,
 };
 use moon_server::migration::migrate_legacy_desktop_data;
 use moon_server::store::RoomStore;
@@ -26,6 +26,7 @@ fn seed_legacy_room(legacy_dir: &Path, room_name: &str) -> i64 {
                 reply_mode: RoomReplyMode::Mentions,
                 discussion_max_rounds: 5,
                 permission_mode: DEFAULT_ROOM_PERMISSION_MODE,
+                room_type: RoomType::Group,
             })
             .await
             .unwrap();

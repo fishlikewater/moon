@@ -249,6 +249,16 @@ export interface Agent {
 export type RoomReplyMode = "mentions" | "moderator";
 
 /**
+ * 房间类型：普通协作房间，或与单个智能体的一对一直聊。
+ *
+ * 直聊是隐藏的特制房间：不出现在房间列表，单成员、无主持人，无 @
+ * 消息直接路由给唯一成员；展示名即「与 {agent.name} 对话」。
+ */
+export type RoomType = "group" | "direct";
+
+export const ROOM_TYPES = ["group", "direct"] as const;
+
+/**
  * 房间级 harness 权限模式。
  *
  * - `plan`：计划模式，只读规划；
@@ -315,6 +325,8 @@ export interface AppSettingsResponse {
 export interface Room {
   id: number;
   name: string;
+  /** 房间类型：group 普通房间；direct 智能体直聊（隐藏、单成员）。 */
+  roomType: RoomType;
   /** 主工作目录，也是 harness 的运行 cwd。 */
   workspaceDir: string;
   /** 房间绑定的全部目录；第一个与 workspaceDir 相同。 */

@@ -50,6 +50,7 @@ async fn fresh_database_reaches_latest_version() {
     assert!(columns.contains(&"discussion_max_rounds".to_string()));
     assert!(columns.contains(&"reply_mode".to_string()));
     assert!(columns.contains(&"workspace_dirs".to_string()));
+    assert!(columns.contains(&"room_type".to_string()));
 
     let run_columns: Vec<String> = sqlx::query("PRAGMA table_info(agent_runs)")
         .fetch_all(db.pool())
@@ -380,5 +381,50 @@ async fn v21_backfills_reuse_and_context_watermarks_by_session_state() {
         .map(|row| row.get::<String, _>("name"))
         .collect();
     assert!(columns.contains(&"last_context_message_id".to_string()));
+    db.close().await;
+}
+
+/// v25：room_type 列对旧数据以默认值 group 回填（AC-001 兼容性）。
+#[tokio::test]
+async fn v25_adds_room_type_with_group_default_for_legacy_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v24-rooms.db");
+    let db = Db::open(&path).await.unwrap();
+    // 模拟 v24 时代的存量房间：插入后回退版本号，再重新打开触发 v25。
+    sqlx::query(
+        "INSERT INTO rooms (name, workspace_dir, permission_mode, created_at)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind("legacy-room")
+    .bind("E:/tmp/repo")
+    .bind("auto")
+    .bind(1_i64)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    sqlx::raw_sql("PRAGMA user_version = 24;")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    db.close().await;
+
+    let db = Db::open(&path).await.unwrap();
+    assert_eq!(db.user_version().await.unwrap(), LATEST_VERSION);
+    let room_type: String =
+        sqlx::query_scalar("SELECT room_type FROM rooms WHERE name = ?")
+            .bind("legacy-room")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(room_type, "group", "旧房间升级后应为普通房间");
+    // 直聊按 agent_id 反查成员关系，v25 同步补单列索引。
+    let index_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type = 'index' AND name = 'idx_room_members_agent'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(index_count, 1, "room_members.agent_id 查询应有索引");
     db.close().await;
 }

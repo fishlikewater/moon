@@ -388,6 +388,19 @@ impl ChatService {
             return Ok(HandleUserMessageResult { user_message });
         }
 
+        // 直聊房间只有一个成员：无 @ 消息直接路由给它，一个回复周期即结束。
+        if room.room_type == crate::domain::room::RoomType::Direct {
+            if let Some(agent) = members.first() {
+                self.enqueue_run(
+                    room.clone(),
+                    agent.clone(),
+                    instruction.clone(),
+                    RunAgentOptions::default(),
+                );
+            }
+            return Ok(HandleUserMessageResult { user_message });
+        }
+
         if room.reply_mode != RoomReplyMode::Moderator {
             return Ok(HandleUserMessageResult { user_message });
         }

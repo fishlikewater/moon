@@ -1,8 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import type { Room } from "@moon/shared";
-import { AppSidebar } from "./AppSidebar";
+import type { Agent, Room } from "@moon/shared";
+import {
+  AppSidebar,
+  buildDirectChatEntries,
+  type DirectChatEntry,
+} from "./AppSidebar";
 import type { NavSummary } from "../../useNavSummary";
 
 const summary: NavSummary = {
@@ -15,6 +19,7 @@ function room(id: number, name: string): Room {
   return {
     id,
     name,
+    roomType: "group",
     workspaceDir: `E:/tmp/${name}`,
     workspaceDirs: [`E:/tmp/${name}`],
     moderatorAgentId: null,
@@ -41,6 +46,71 @@ function render(
     </MemoryRouter>,
   );
 }
+
+function directEntry(
+  overrides: Partial<DirectChatEntry> = {},
+): DirectChatEntry {
+  return {
+    roomId: 42,
+    agentId: 1,
+    agentName: "小助手",
+    lastActivityAt: null,
+    ...overrides,
+  };
+}
+
+function agent(id: number, name: string): Agent {
+  return {
+    id,
+    name,
+    persona: "",
+    harness: "fake",
+    customHarnessId: null,
+    workspaceDir: null,
+    modelConfig: null,
+    builtinRole: null,
+    createdAt: 1,
+  };
+}
+
+describe("buildDirectChatEntries", () => {
+  it("解析成员名字，过滤缺成员的直聊并按最近活动倒序", () => {
+    const entries = buildDirectChatEntries(
+      [
+        {
+          ...room(11, "与 小助手 对话"),
+          roomType: "direct",
+          memberIds: [1],
+          lastActivityAt: 100,
+        },
+        {
+          ...room(22, "与 审稿人 对话"),
+          roomType: "direct",
+          memberIds: [2],
+          lastActivityAt: 300,
+        },
+        {
+          ...room(33, "无主直聊"),
+          roomType: "direct",
+          memberIds: [9],
+          lastActivityAt: 900,
+        },
+        {
+          ...room(44, "空成员直聊"),
+          roomType: "direct",
+          memberIds: [],
+          lastActivityAt: 500,
+        },
+      ],
+      [agent(1, "小助手"), agent(2, "审稿人")],
+    );
+
+    expect(entries).toEqual([
+      { roomId: 22, agentId: 2, agentName: "审稿人", lastActivityAt: 300 },
+      { roomId: 11, agentId: 1, agentName: "小助手", lastActivityAt: 100 },
+    ]);
+  });
+});
 
 describe("AppSidebar", () => {
   it("渲染主导航并标记当前分组", () => {
@@ -109,5 +179,35 @@ describe("AppSidebar", () => {
     expect(html).toContain("is-collapsed");
     expect(html).not.toContain("最近房间");
     expect(html).toContain('href="/agents"');
+  });
+
+  it("有直聊时渲染对话分组与条目", () => {
+    const html = render("/agents", {
+      directChats: [directEntry({ lastActivityAt: Date.now() })],
+    });
+
+    expect(html).toContain("对话");
+    expect(html).toContain('href="/chat/room/42"');
+    expect(html).toContain("小助手");
+    expect(html).toContain("刚刚");
+    expect(html).toContain("最近有活动");
+  });
+
+  it("无直聊时只保留发起入口与提示，不渲染条目", () => {
+    const html = render("/agents", { directChats: [] });
+
+    expect(html).toContain("发起直聊");
+    expect(html).toContain("点 ✎");
+    expect(html).not.toContain("app-sidebar-direct-list");
+  });
+
+  it("折叠为图标栏时不渲染对话分组", () => {
+    const html = render("/agents", {
+      collapsed: true,
+      directChats: [directEntry({ lastActivityAt: Date.now() })],
+    });
+
+    expect(html).not.toContain("对话");
+    expect(html).not.toContain('href="/chat/room/42"');
   });
 });

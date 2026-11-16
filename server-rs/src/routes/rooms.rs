@@ -51,8 +51,18 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn list_rooms(State(state): State<AppState>) -> AppResult<Json<Vec<Room>>> {
-    Ok(Json(state.room_service.list().await?))
+/// 房间列表：默认只返回普通房间；`?kind=direct` 返回直聊房间。
+async fn list_rooms(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> AppResult<Json<Vec<Room>>> {
+    match query.get("kind").map(String::as_str) {
+        None | Some("group") => Ok(Json(state.room_service.list().await?)),
+        Some("direct") => Ok(Json(state.room_service.list_direct().await?)),
+        Some(other) => Err(AppError::validation(format!(
+            "kind 必须是 group | direct：{other}"
+        ))),
+    }
 }
 
 async fn create_room(

@@ -1,0 +1,818 @@
+import {
+  lazy,
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent,
+  type DragEvent,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import type { Agent, Message, MessageAttachment, Room } from "@moon/shared";
+import { api, errorMessage } from "../api/client";
+import { AgentAvatar } from "../components/AgentAvatar";
+import {
+  DEFAULT_ATTACHMENT_LIMITS,
+  filterPendingFiles,
+  formatFileSize,
+  isImageAttachment,
+} from "../components/attachmentView";
+import { composerKeyAction } from "../components/composerKeys";
+import { useRoomChrome } from "../components/layout/roomChrome";
+import SessionPanel from "../components/SessionPanel";
+import { useRoomChat } from "../hooks/useRoomChat";
+import { changeDirectPermissionMode } from "./directChatPermission";
+import { uploadAndSendDirectMessage } from "./directChatSend";
+
+// Markdown 依赖体积较大；与房间页一致按需加载。
+const MarkdownContent = lazy(() => import("../components/MarkdownContent"));
+
+const PERMISSION_MODE_LABELS: Record<Room["permissionMode"], string> = {
+  plan: "计划模式",
+  auto: "自主模式",
+  full: "完全访问",
+};
+
+interface PendingAttachment {
+  key: string;
+  file: File;
+  previewUrl: string | null;
+}
+
+function parseRoomId(raw: string | undefined): number | null {
+  if (raw === undefined || !/^\d+$/.test(raw)) {
+    return null;
+  }
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function formatTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString("zh-CN", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** 消息附件：图片给缩略预览，其余给下载链接。 */
+function MessageAttachments({
+  attachments,
+}: {
+  attachments: readonly MessageAttachment[];
+}) {
+  if (attachments.length === 0) {
+    return null;
+  }
+  return (
+    <div className="msg-attachments" aria-label="附件">
+      {attachments.map((attachment) => {
+        const href = api.attachments.url(attachment.id);
+        if (isImageAttachment(attachment.mimeType)) {
+          return (
+            <a
+              key={attachment.id}
+              className="msg-attachment-image"
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              title={`${attachment.name}（${formatFileSize(attachment.size)}）`}
+            >
+              <img src={href} alt={attachment.name} loading="lazy" />
+            </a>
+          );
+        }
+        return (
+          <a
+            key={attachment.id}
+            className="msg-attachment-file"
+            href={href}
+            download={attachment.name}
+            title={attachment.name}
+          >
+            <span className="msg-attachment-name">{attachment.name}</span>
+            <span className="msg-attachment-size">
+              {formatFileSize(attachment.size)}
+            </span>
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 发送按钮可用性：非发送中且有正文或附件。 */
+export function canSendDirectMessage(
+  draft: string,
+  attachmentCount: number,
+  sending: boolean,
+): boolean {
+  return !sending && (draft.trim() !== "" || attachmentCount > 0);
+}
+
+interface DirectMessageProps {
+  message: Message;
+  agent: Agent;
+  runId: number | null;
+  onInspectRun: (runId: number) => void;
+  onLayoutChange: () => void;
+}
+
+/** 直聊消息：复用房间消息的视觉类名，但不渲染讨论/委派/反应等房间元素。 */
+export const DirectMessage = memo(function DirectMessage({
+  message,
+  agent,
+  runId,
+  onInspectRun,
+  onLayoutChange,
+}: DirectMessageProps) {
+  const isUser = message.senderType === "user";
+  const isProgress = message.kind === "progress";
+  return (
+    <article
+      id={`message-${message.id}`}
+      className={`msg msg-${message.senderType} msg-${message.status}${
+        isProgress ? " is-progress" : ""
+      }`}
+    >
+      {isUser ? (
+        <span className="avatar avatar-sm avatar-user" aria-hidden="true">
+          我
+        </span>
+      ) : (
+        <AgentAvatar
+          id={message.senderAgentId ?? agent.id}
+          name={agent.name}
+          size="sm"
+        />
+      )}
+
+      <div className="msg-body">
+        <header className="msg-head">
+          <strong>{isUser ? "我" : agent.name}</strong>
+          <time>{formatTime(message.createdAt)}</time>
+          {message.status === "streaming" && (
+            <span className="direct-streaming">生成中…</span>
+          )}
+          {message.status === "failed" && (
+            <span className="status-pill blocked">失败</span>
+          )}
+        </header>
+
+        {isProgress ? (
+          <p className="msg-text muted">{message.content}</p>
+        ) : (
+          <Suspense fallback={<p className="msg-text">{message.content}</p>}>
+            <MarkdownContent text={message.content} onRendered={onLayoutChange} />
+          </Suspense>
+        )}
+
+        <MessageAttachments attachments={message.attachments ?? []} />
+
+        {runId !== null && (
+          <div className="msg-run">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => onInspectRun(runId)}
+            >
+              运行详情
+            </button>
+          </div>
+        )}
+      </div>
+    </article>
+  );
+});
+
+/** 空态引导：头像、人设与沙盒说明；无消息时渲染。 */
+export function DirectEmptyState({ agent }: { agent: Agent }) {
+  return (
+    <div className="empty-state direct-empty">
+      <AgentAvatar id={agent.id} name={agent.name} size="lg" />
+      <p className="direct-empty-name">与 {agent.name} 对话</p>
+      <p>{agent.persona}</p>
+      <p className="muted">
+        TA 在独立沙盒工作目录中工作，不影响智能体在其他房间的工作区。
+        直接输入即可开始，无需 @ 成员。
+      </p>
+    </div>
+  );
+}
+
+/**
+ * 智能体直聊页：`/chat/room/:roomId`。
+ *
+ * 直聊是隐藏的单成员房间，消息、流式、会话、附件与运行详情都复用房间链路；
+ * 页面只保留 1:1 需要的展示与操作，不渲染成员/讨论/委派入口。
+ */
+export default function DirectChatPage() {
+  const { roomId: rawRoomId } = useParams<{ roomId: string }>();
+  const roomId = parseRoomId(rawRoomId);
+  const navigate = useNavigate();
+  const { setChrome } = useRoomChrome();
+
+  const [room, setRoom] = useState<Room | null>(null);
+  const [agent, setAgent] = useState<Agent | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+  const [pendingAttachments, setPendingAttachments] = useState<
+    PendingAttachment[]
+  >([]);
+  const [permissionSaving, setPermissionSaving] = useState(false);
+  const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+  const [clearNotice, setClearNotice] = useState<string | null>(null);
+
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentKeyRef = useRef(0);
+  const pendingAttachmentsRef = useRef<PendingAttachment[]>([]);
+
+  const chat = useRoomChat(roomId, { onError: setError });
+  const {
+    messages,
+    runningCount,
+    announcement,
+    unseenCount,
+    stickToBottom,
+    historyLoading,
+    connected,
+    listRef,
+    onListScroll,
+    onMessageLayout,
+    jumpToLatest,
+    mergeMessage,
+    reloadMessages,
+  } = chat;
+
+  useEffect(() => {
+    pendingAttachmentsRef.current = pendingAttachments;
+  }, [pendingAttachments]);
+
+  // 离开页面时释放仍未发送的图片预览 URL。
+  useEffect(() => {
+    return () => {
+      for (const attachment of pendingAttachmentsRef.current) {
+        if (attachment.previewUrl !== null) {
+          URL.revokeObjectURL(attachment.previewUrl);
+        }
+      }
+    };
+  }, []);
+
+  // 直聊与智能体一一对应：从直聊列表里按 id 找到房间，再解析唯一成员。
+  useEffect(() => {
+    if (roomId === null) {
+      setLoading(false);
+      setError("非法的直聊地址");
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setRoom(null);
+    setAgent(null);
+    void (async () => {
+      try {
+        const [directRooms, agents] = await Promise.all([
+          api.rooms.list("direct"),
+          api.agents.list(),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        const found = directRooms.find((candidate) => candidate.id === roomId);
+        if (found === undefined) {
+          setError("直聊不存在或已被删除");
+          return;
+        }
+        const memberId = found.memberIds[0];
+        const member =
+          memberId === undefined
+            ? null
+            : (agents.find((candidate) => candidate.id === memberId) ?? null);
+        if (member === null) {
+          setError("直聊成员不存在");
+          return;
+        }
+        setRoom(found);
+        setAgent(member);
+      } catch (cause) {
+        if (!cancelled) {
+          setError(errorMessage(cause));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId]);
+
+  // 顶栏只显示对话标题与沙盒目录；操作入口留在页内。
+  useEffect(() => {
+    setChrome(
+      agent === null
+        ? null
+        : {
+            title: `与 ${agent.name} 对话`,
+            backTo: "/agents",
+            backLabel: "返回智能体",
+            meta: room?.workspaceDir,
+          },
+    );
+    return () => setChrome(null);
+  }, [agent, room, setChrome]);
+
+  const changePermissionMode = async (mode: Room["permissionMode"]) => {
+    if (room === null || permissionSaving) {
+      return;
+    }
+    setPermissionSaving(true);
+    setError(null);
+    try {
+      const updated = await changeDirectPermissionMode(room, mode, {
+        update: api.rooms.update,
+      });
+      if (updated !== null) {
+        setRoom(updated);
+      }
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setPermissionSaving(false);
+    }
+  };
+
+  const addAttachments = useCallback((files: FileList | File[]) => {
+    const { accepted, errors } = filterPendingFiles(
+      pendingAttachmentsRef.current.length,
+      Array.from(files),
+      DEFAULT_ATTACHMENT_LIMITS,
+    );
+    if (errors.length > 0) {
+      setComposerError(errors[0] ?? null);
+    }
+    if (accepted.length === 0) {
+      return;
+    }
+    setPendingAttachments((previous) => [
+      ...previous,
+      ...accepted.map((file) => ({
+        key: `direct-attach-${attachmentKeyRef.current++}`,
+        file,
+        previewUrl: isImageAttachment(file.type)
+          ? URL.createObjectURL(file)
+          : null,
+      })),
+    ]);
+  }, []);
+
+  const removePendingAttachment = useCallback((key: string) => {
+    setPendingAttachments((previous) => {
+      const target = previous.find((attachment) => attachment.key === key);
+      if (target?.previewUrl !== null && target?.previewUrl !== undefined) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      return previous.filter((attachment) => attachment.key !== key);
+    });
+  }, []);
+
+  const clearPendingAttachments = useCallback(() => {
+    for (const attachment of pendingAttachmentsRef.current) {
+      if (attachment.previewUrl !== null) {
+        URL.revokeObjectURL(attachment.previewUrl);
+      }
+    }
+    setPendingAttachments([]);
+  }, []);
+
+  const handleComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = event.clipboardData.files;
+    if (files.length > 0) {
+      event.preventDefault();
+      addAttachments(files);
+    }
+  };
+
+  const handleComposerDrop = (event: DragEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (event.dataTransfer.files.length > 0) {
+      addAttachments(event.dataTransfer.files);
+    }
+  };
+
+  const handleComposerChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setDraft(event.target.value);
+  };
+
+  const handleComposerKeyDown = (
+    event: KeyboardEvent<HTMLTextAreaElement>,
+  ) => {
+    const action = composerKeyAction({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      completionOpen: false,
+    });
+    if (action === "send") {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
+    }
+  };
+
+  const send = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (roomId === null || sending) {
+      return;
+    }
+    const content = draft.trim();
+    const attachments = pendingAttachmentsRef.current;
+    if (content === "" && attachments.length === 0) {
+      return;
+    }
+
+    setSending(true);
+    setUploading(attachments.length > 0);
+    setComposerError(null);
+    try {
+      const userMessage = await uploadAndSendDirectMessage(
+        {
+          upload: api.attachments.upload,
+          send: api.messages.send,
+          remove: api.attachments.remove,
+        },
+        roomId,
+        content,
+        attachments.map((attachment) => attachment.file),
+      );
+      mergeMessage(userMessage);
+      setDraft("");
+      clearPendingAttachments();
+    } catch (cause) {
+      setComposerError(errorMessage(cause));
+    } finally {
+      setUploading(false);
+      setSending(false);
+    }
+  };
+
+  const submitClear = async () => {
+    if (roomId === null || clearing) {
+      return;
+    }
+    setClearing(true);
+    setClearError(null);
+    try {
+      const result = await api.messages.cleanup(roomId, 0);
+      setClearOpen(false);
+      setClearNotice(
+        `已清屏：删除 ${result.deleted} 条，隐藏 ${result.hidden} 条`,
+      );
+      await reloadMessages();
+    } catch (cause) {
+      setClearError(errorMessage(cause));
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  if (loading || historyLoading) {
+    return (
+      <section className="page">
+        <p className="muted">加载中…</p>
+      </section>
+    );
+  }
+
+  if (error !== null || roomId === null || room === null || agent === null) {
+    return (
+      <section className="page">
+        <p className="banner error" role="alert">
+          {error ?? "直聊不可用"}
+        </p>
+        <Link className="back-link" to="/agents">
+          返回智能体
+        </Link>
+      </section>
+    );
+  }
+
+  return (
+    <section className="page direct-page page-fixed">
+      <p className="sr-only" role="status" aria-live="polite">
+        {announcement}
+      </p>
+
+      <header className="direct-head">
+        <AgentAvatar id={agent.id} name={agent.name} size="md" />
+        <div className="direct-head-body">
+          <div className="direct-head-title">
+            <h1>{agent.name}</h1>
+            <span className={connected ? "live on" : "live off"}>
+              {connected ? "实时已连接" : "重连中…"}
+            </span>
+            {runningCount > 0 && (
+              <span className="direct-running" role="status">
+                运行中 · {runningCount}
+              </span>
+            )}
+          </div>
+          <p className="direct-head-meta">
+            <span className="badge badge-harness">{agent.harness}</span>
+            <span className="chip chip-mono">
+              {agent.modelConfig?.model ?? "默认"}
+              {typeof agent.modelConfig?.reasoningLevel === "string" &&
+              agent.modelConfig.reasoningLevel.trim() !== ""
+                ? ` · ${agent.modelConfig.reasoningLevel}`
+                : ""}
+            </span>
+            <span className="direct-sandbox" title={room.workspaceDir}>
+              沙盒：{room.workspaceDir}
+            </span>
+          </p>
+        </div>
+        <div className="direct-head-actions">
+          <label className="direct-permission">
+            <span className="field-label">权限</span>
+            <select
+              value={room.permissionMode}
+              disabled={permissionSaving}
+              onChange={(event) =>
+                void changePermissionMode(
+                  event.target.value as Room["permissionMode"],
+                )
+              }
+            >
+              {(["plan", "auto", "full"] as const).map((mode) => (
+                <option key={mode} value={mode}>
+                  {PERMISSION_MODE_LABELS[mode]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => setSessionPanelOpen(true)}
+          >
+            会话
+          </button>
+          <Link
+            className="btn btn-secondary btn-sm"
+            to={`/rooms/${roomId}/runs`}
+          >
+            运行记录
+          </Link>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => {
+              setClearError(null);
+              setClearNotice(null);
+              setClearOpen(true);
+            }}
+          >
+            清屏
+          </button>
+        </div>
+      </header>
+
+      <div className="chat-shell direct-chat-shell">
+        <div className="chat-panel">
+          <div className="message-list" ref={listRef} onScroll={onListScroll}>
+            {messages.length === 0 ? (
+              <DirectEmptyState agent={agent} />
+            ) : (
+              messages.map((message) => (
+                <DirectMessage
+                  key={message.id}
+                  message={message}
+                  agent={agent}
+                  runId={chat.runIdByMessageId[message.id] ?? null}
+                  onInspectRun={(runId) =>
+                    navigate(`/rooms/${roomId}/runs/${runId}`)
+                  }
+                  onLayoutChange={onMessageLayout}
+                />
+              ))
+            )}
+          </div>
+
+          {!stickToBottom && (
+            <button
+              type="button"
+              className="jump-latest"
+              onClick={jumpToLatest}
+              aria-label={
+                unseenCount > 0
+                  ? `回到最新，${unseenCount} 条未读`
+                  : "回到最新"
+              }
+              title="回到最新"
+            >
+              ↓
+              {unseenCount > 0 && (
+                <span className="jump-latest-count">
+                  {unseenCount > 99 ? "99+" : unseenCount}
+                </span>
+              )}
+            </button>
+          )}
+
+          {clearNotice !== null && (
+            <p className="banner" role="status">
+              {clearNotice}
+            </p>
+          )}
+
+          {composerError !== null && (
+            <p className="banner error" role="alert">
+              {composerError}
+            </p>
+          )}
+
+          <form
+            className="composer"
+            onSubmit={send}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleComposerDrop}
+          >
+            <input
+              ref={attachmentInputRef}
+              type="file"
+              multiple
+              hidden
+              aria-label="选择附件"
+              onChange={(event) => {
+                if (event.target.files !== null) {
+                  addAttachments(event.target.files);
+                }
+                event.target.value = "";
+              }}
+            />
+            {pendingAttachments.length > 0 && (
+              <div className="composer-attachments" aria-label="待发送附件">
+                {pendingAttachments.map((attachment) => (
+                  <div key={attachment.key} className="attachment-chip">
+                    {attachment.previewUrl !== null ? (
+                      <img
+                        className="attachment-chip-thumb"
+                        src={attachment.previewUrl}
+                        alt=""
+                      />
+                    ) : (
+                      <span className="attachment-chip-icon" aria-hidden="true">
+                        文件
+                      </span>
+                    )}
+                    <span
+                      className="attachment-chip-name"
+                      title={attachment.file.name}
+                    >
+                      {attachment.file.name}
+                    </span>
+                    <span className="attachment-chip-size">
+                      {formatFileSize(attachment.file.size)}
+                    </span>
+                    <button
+                      type="button"
+                      className="attachment-chip-remove"
+                      aria-label={`移除附件 ${attachment.file.name}`}
+                      onClick={() => removePendingAttachment(attachment.key)}
+                      disabled={sending}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="composer-input">
+              <button
+                type="button"
+                className="composer-attach"
+                title="添加附件"
+                aria-label="添加附件"
+                onClick={() => attachmentInputRef.current?.click()}
+                disabled={sending}
+              >
+                附件
+              </button>
+              <textarea
+                value={draft}
+                onChange={handleComposerChange}
+                onKeyDown={handleComposerKeyDown}
+                onPaste={handleComposerPaste}
+                placeholder={`给 ${agent.name} 发消息；Enter 发送，Shift+Enter 换行`}
+                rows={1}
+                disabled={sending}
+              />
+              <button
+                type="submit"
+                className="composer-send"
+                title={uploading ? "上传中…" : sending ? "发送中…" : "发送"}
+                aria-label={uploading ? "上传中" : sending ? "发送中" : "发送"}
+                disabled={!canSendDirectMessage(
+                  draft,
+                  pendingAttachments.length,
+                  sending,
+                )}
+              >
+                发送
+              </button>
+            </div>
+            <div className="composer-actions">
+              <span className="composer-hint">
+                Enter 发送、Shift+Enter 换行；支持拖放或粘贴图片；无需 @ 成员。
+              </span>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {sessionPanelOpen && (
+        <SessionPanel
+          roomId={roomId}
+          members={[
+            {
+              id: agent.id,
+              name: agent.name,
+              builtinRole: agent.builtinRole,
+            },
+          ]}
+          onClose={() => setSessionPanelOpen(false)}
+        />
+      )}
+
+      {clearOpen && (
+        <div className="modal-layer">
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="direct-clear-title"
+          >
+            <header className="modal-head">
+              <h2 id="direct-clear-title" className="card-title">
+                清屏
+              </h2>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                aria-label="关闭清屏对话框"
+                onClick={() => setClearOpen(false)}
+                disabled={clearing}
+              >
+                关闭
+              </button>
+            </header>
+            <p className="muted">
+              清屏会删除这段直聊的全部纯聊天消息与附件；运行记录与任务不受影响。
+              有运行中的任务时无法清屏。
+            </p>
+            {clearError !== null && (
+              <p className="banner error" role="alert">
+                {clearError}
+              </p>
+            )}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setClearOpen(false)}
+                disabled={clearing}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => void submitClear()}
+                disabled={clearing}
+              >
+                {clearing ? "清理中…" : "确认清屏"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}

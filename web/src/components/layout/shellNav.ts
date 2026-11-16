@@ -28,6 +28,7 @@ export const SHELL_NAV_ITEMS: readonly ShellNavItem[] = [
 ];
 
 export const SIDEBAR_COLLAPSED_KEY = "moon.sidebar.collapsed";
+export const SIDEBAR_DIRECTS_COLLAPSED_KEY = "moon.sidebar.directs.collapsed";
 
 /** 把当前路径归到唯一导航分组；未知路径按默认首页处理。 */
 export function activeSection(pathname: string): ShellSection {
@@ -67,11 +68,7 @@ function browserStorage(): SidebarStorage | null {
 export function readSidebarCollapsed(
   storage: SidebarStorage | null = browserStorage(),
 ): boolean {
-  try {
-    return storage?.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return readFlag(SIDEBAR_COLLAPSED_KEY, storage);
 }
 
 /** 写入折叠状态；写入失败不影响界面切换。 */
@@ -79,8 +76,38 @@ export function writeSidebarCollapsed(
   collapsed: boolean,
   storage: SidebarStorage | null = browserStorage(),
 ): void {
+  writeFlag(SIDEBAR_COLLAPSED_KEY, collapsed, storage);
+}
+
+/** 侧栏「对话」分组的折叠状态；语义与主导航折叠一致。 */
+export function readSidebarDirectsCollapsed(
+  storage: SidebarStorage | null = browserStorage(),
+): boolean {
+  return readFlag(SIDEBAR_DIRECTS_COLLAPSED_KEY, storage);
+}
+
+export function writeSidebarDirectsCollapsed(
+  collapsed: boolean,
+  storage: SidebarStorage | null = browserStorage(),
+): void {
+  writeFlag(SIDEBAR_DIRECTS_COLLAPSED_KEY, collapsed, storage);
+}
+
+function readFlag(key: string, storage: SidebarStorage | null): boolean {
   try {
-    storage?.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+    return storage?.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(
+  key: string,
+  value: boolean,
+  storage: SidebarStorage | null,
+): void {
+  try {
+    storage?.setItem(key, value ? "1" : "0");
   } catch {
     // 隐私模式或配额异常时放弃持久化，本次会话仍按内存状态切换。
   }

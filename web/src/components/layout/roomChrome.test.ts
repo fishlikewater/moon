@@ -6,6 +6,7 @@ function makeRoom(overrides: Partial<Room> = {}): Room {
   return {
     id: 13,
     name: "团购券V2版本",
+    roomType: "group",
     workspaceDir: "E:\\Projects\\moon",
     workspaceDirs: ["E:\\Projects\\moon"],
     moderatorAgentId: null,
