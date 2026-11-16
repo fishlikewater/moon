@@ -117,11 +117,15 @@ describe("AppSidebar", () => {
     const html = render("/rooms/12");
 
     expect(html).toContain('href="/agents"');
+    expect(html).toContain('href="/models"');
     expect(html).toContain('href="/harnesses"');
     expect(html).toContain('href="/rooms"');
     expect(html).toContain('href="/tasks"');
     expect(html).toContain('href="/sessions"');
     expect(html).toContain("会话");
+    expect(html.indexOf('href="/models"')).toBeLessThan(
+      html.indexOf('href="/harnesses"'),
+    );
     const roomsAnchor =
       html.match(/<a[^>]*href="\/rooms"[^>]*>/)?.[0] ?? "";
     const agentsAnchor =
@@ -137,6 +141,16 @@ describe("AppSidebar", () => {
     expect(html).toContain("app-nav-link active");
     expect(html).toContain(">3<");
     expect(html).toContain("最近房间");
+  });
+
+  it("访问 /models 时模型入口为当前项", () => {
+    const html = render("/models");
+
+    const modelsAnchor =
+      html.match(/<a[^>]*href="\/models"[^>]*>[\s\S]*?<\/a>/)?.[0] ?? "";
+    expect(modelsAnchor).toContain('aria-current="page"');
+    expect(modelsAnchor).toContain("模型");
+    expect(modelsAnchor).not.toContain("app-nav-count");
   });
 
   it("Harness 入口高亮且不显示数量徽标", () => {

@@ -31,6 +31,7 @@ describe("activeSection", () => {
   it("把路由映射到导航分组", () => {
     expect(activeSection("/agents")).toBe("agents");
     expect(activeSection("/agents/builder")).toBe("agents");
+    expect(activeSection("/models")).toBe("models");
     expect(activeSection("/harnesses")).toBe("harnesses");
     expect(activeSection("/rooms")).toBe("rooms");
     expect(activeSection("/rooms/1")).toBe("rooms");
@@ -46,6 +47,7 @@ describe("activeSection", () => {
   });
 
   it("分组有可读标签", () => {
+    expect(sectionLabel("models")).toBe("模型");
     expect(sectionLabel("agents")).toBe("智能体");
     expect(sectionLabel("harnesses")).toBe("Harness");
     expect(sectionLabel("rooms")).toBe("房间");
@@ -59,8 +61,22 @@ describe("activeSection", () => {
     expect(sections.indexOf("sessions")).toBe(sections.indexOf("tasks") + 1);
   });
 
-  it("Harness 排在主导航第一位", () => {
+  it("模型排在 Harness 之前，其余顺序不变", () => {
+    expect(SHELL_NAV_ITEMS.map((item) => item.section)).toEqual([
+      "models",
+      "harnesses",
+      "agents",
+      "rooms",
+      "tasks",
+      "sessions",
+      "settings",
+    ]);
     expect(SHELL_NAV_ITEMS[0]).toEqual({
+      section: "models",
+      to: "/models",
+      label: "模型",
+    });
+    expect(SHELL_NAV_ITEMS[1]).toEqual({
       section: "harnesses",
       to: "/harnesses",
       label: "Harness",

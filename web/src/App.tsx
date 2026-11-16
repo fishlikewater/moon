@@ -17,6 +17,7 @@ import { isDesktopShell } from "./desktopShell";
 import { useTheme } from "./useTheme";
 import AgentBuilderPage from "./pages/AgentBuilderPage";
 import HarnessesPage from "./pages/HarnessesPage";
+import ModelsPage from "./pages/ModelsPage";
 import RoomPage from "./pages/RoomPage";
 import RoomsPage from "./pages/RoomsPage";
 import RunPage from "./pages/RunPage";
@@ -557,6 +558,7 @@ function AppShell() {
             <Route path="/" element={<Navigate to="/agents" replace />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/agents/builder" element={<AgentBuilderPage />} />
+            <Route path="/models" element={<ModelsPage />} />
             <Route path="/harnesses" element={<HarnessesPage />} />
             <Route path="/rooms" element={<RoomsPage />} />
             <Route path="/rooms/:id" element={<RoomKindRedirect />} />

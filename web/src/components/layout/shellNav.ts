@@ -5,8 +5,9 @@
  */
 
 export type ShellSection =
-  | "agents"
+  | "models"
   | "harnesses"
+  | "agents"
   | "rooms"
   | "tasks"
   | "sessions"
@@ -19,6 +20,7 @@ export interface ShellNavItem {
 }
 
 export const SHELL_NAV_ITEMS: readonly ShellNavItem[] = [
+  { section: "models", to: "/models", label: "模型" },
   { section: "harnesses", to: "/harnesses", label: "Harness" },
   { section: "agents", to: "/agents", label: "智能体" },
   { section: "rooms", to: "/rooms", label: "房间" },
@@ -32,6 +34,9 @@ export const SIDEBAR_DIRECTS_COLLAPSED_KEY = "moon.sidebar.directs.collapsed";
 
 /** 把当前路径归到唯一导航分组；未知路径按默认首页处理。 */
 export function activeSection(pathname: string): ShellSection {
+  if (pathname.startsWith("/models")) {
+    return "models";
+  }
   if (pathname.startsWith("/harnesses")) {
     return "harnesses";
   }
