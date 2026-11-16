@@ -1,8 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { Agent, Message } from "@moon/shared";
+import type { Agent, Message, Room } from "@moon/shared";
 import {
   canSendDirectMessage,
+  DirectChatSideFacts,
   DirectEmptyState,
   DirectMessage,
 } from "./DirectChatPage";
@@ -59,6 +60,69 @@ describe("DirectEmptyState", () => {
     expect(html).toContain(AGENT.persona);
     expect(html).toContain("独立沙盒工作目录");
     expect(html).toContain("无需 @ 成员");
+  });
+});
+
+function directRoom(): Room {
+  return {
+    id: 20,
+    name: "与 小助手 对话",
+    roomType: "direct",
+    workspaceDir: "C:/Users/test/.moon/harness-sessions/direct-workspaces/direct-1",
+    workspaceDirs: [
+      "C:/Users/test/.moon/harness-sessions/direct-workspaces/direct-1",
+    ],
+    moderatorAgentId: null,
+    memberIds: [1],
+    replyMode: "mentions",
+    discussionMaxRounds: 1,
+    permissionMode: "auto",
+    createdAt: 1,
+    lastActivityAt: null,
+  };
+}
+
+describe("DirectChatSideFacts", () => {
+  it("展示连接、运行、harness、模型、沙盒与权限", () => {
+    const html = renderToStaticMarkup(
+      <DirectChatSideFacts
+        agent={{
+          ...AGENT,
+          modelConfig: { model: "deepseek-v4", reasoningLevel: "max" },
+        }}
+        room={directRoom()}
+        connected
+        runningCount={2}
+        permissionSaving={false}
+        onChangePermission={() => {}}
+      />,
+    );
+
+    expect(html).toContain("实时已连接");
+    expect(html).toContain("运行中");
+    expect(html).toContain("2 个");
+    expect(html).toContain("fake");
+    expect(html).toContain("deepseek-v4 · max");
+    expect(html).toContain("direct-workspaces/direct-1");
+    expect(html).toContain("自主模式");
+    expect(html).toContain("可读写，危险操作受拦截");
+  });
+
+  it("重连中与空闲状态不显示运行数量", () => {
+    const html = renderToStaticMarkup(
+      <DirectChatSideFacts
+        agent={AGENT}
+        room={directRoom()}
+        connected={false}
+        runningCount={0}
+        permissionSaving={false}
+        onChangePermission={() => {}}
+      />,
+    );
+
+    expect(html).toContain("重连中…");
+    expect(html).toContain("空闲");
+    expect(html).not.toContain("0 个");
   });
 });
 

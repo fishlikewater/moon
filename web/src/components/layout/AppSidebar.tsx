@@ -4,6 +4,7 @@ import type { Agent, Room } from "@moon/shared";
 import { api, errorMessage } from "../../api/client";
 import { AgentAvatar } from "../AgentAvatar";
 import type { NavSummary } from "../../useNavSummary";
+import { DirectChatPickerDialog } from "./DirectChatPickerDialog";
 import {
   readSidebarDirectsCollapsed,
   SHELL_NAV_ITEMS,
@@ -325,6 +326,8 @@ export function AppSidebar({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
+  const [agentsLoading, setAgentsLoading] = useState(true);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   // 路由变化后刷新：新建直聊、发送消息都会更新最近活动时间。
@@ -338,10 +341,19 @@ export function AppSidebar({
         if (!cancelled) {
           setAgents(agentList);
           setFetchedDirects(rooms);
+          setAgentsError(null);
         }
       })
-      .catch(() => {
-        // 直聊区块失败不影响主导航；保留上一次列表。
+      .catch((cause) => {
+        // 直聊区块失败不影响主导航；保留上一次列表，但让选择器能看到失败原因。
+        if (!cancelled) {
+          setAgentsError(errorMessage(cause));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAgentsLoading(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -361,6 +373,7 @@ export function AppSidebar({
           if (!cancelled) {
             setAgents(agentList);
             setFetchedDirects(rooms);
+            setAgentsError(null);
           }
         })
         .catch(() => {
@@ -375,6 +388,12 @@ export function AppSidebar({
 
   const entries =
     directChats ?? buildDirectChatEntries(fetchedDirects, agents);
+
+  const existingAgentIds = new Set(
+    fetchedDirects
+      .map((room) => room.memberIds[0])
+      .filter((id): id is number => id !== undefined),
+  );
 
   const toggleDirects = () => {
     const next = !directsCollapsed;
@@ -534,33 +553,16 @@ export function AppSidebar({
             ))}
 
           {pickerOpen && (
-            <div
-              className="app-sidebar-direct-picker"
-              role="group"
-              aria-label="选择智能体"
-            >
-              {pickerError !== null && (
-                <p className="app-sidebar-empty">{pickerError}</p>
-              )}
-              {agents.length === 0 ? (
-                <p className="app-sidebar-empty">暂无智能体</p>
-              ) : (
-                agents.map((agent) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    className="app-sidebar-direct-choice"
-                    onClick={() => void startDirectChat(agent.id)}
-                    disabled={pickerBusy}
-                  >
-                    <AgentAvatar id={agent.id} name={agent.name} size="sm" />
-                    <span className="app-sidebar-direct-choice-name">
-                      {agent.name}
-                    </span>
-                  </button>
-                ))
-              )}
-            </div>
+            <DirectChatPickerDialog
+              agents={agents}
+              loading={agentsLoading}
+              loadError={agentsError}
+              existingAgentIds={existingAgentIds}
+              busy={pickerBusy}
+              error={pickerError}
+              onPick={(agentId) => void startDirectChat(agentId)}
+              onClose={() => setPickerOpen(false)}
+            />
           )}
         </div>
       )}

@@ -38,6 +38,12 @@ const PERMISSION_MODE_LABELS: Record<Room["permissionMode"], string> = {
   full: "完全访问",
 };
 
+const PERMISSION_MODE_HINTS: Record<Room["permissionMode"], string> = {
+  plan: "只读规划，不写文件",
+  auto: "可读写，危险操作受拦截",
+  full: "无审批、无沙箱",
+};
+
 interface PendingAttachment {
   key: string;
   file: File;
@@ -58,6 +64,83 @@ function formatTime(ms: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function HistoryIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M3 12a9 9 0 1 0 2.6-6.3L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+function SessionsIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l2.2-3.3A8.5 8.5 0 1 1 21 11.5Z" />
+      <path d="M8 11h8" />
+      <path d="M8 14.5h5" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M4 7h16" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M6 7l1 13h10l1-13" />
+      <path d="M9 7V4h6v3" />
+    </svg>
+  );
+}
+
+function PanelIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M15 4v16" />
+    </svg>
+  );
 }
 
 /** 消息附件：图片给缩略预览，其余给下载链接。 */
@@ -205,6 +288,106 @@ export function DirectEmptyState({ agent }: { agent: Agent }) {
   );
 }
 
+interface DirectChatSideFactsProps {
+  agent: Agent;
+  room: Room;
+  connected: boolean;
+  runningCount: number;
+  permissionSaving: boolean;
+  onChangePermission: (mode: Room["permissionMode"]) => void;
+}
+
+/** 右侧抽屉内容：连接、运行、harness/模型、沙盒与权限；动作入口在 rail。 */
+export function DirectChatSideFacts({
+  agent,
+  room,
+  connected,
+  runningCount,
+  permissionSaving,
+  onChangePermission,
+}: DirectChatSideFactsProps) {
+  const model = agent.modelConfig?.model ?? "默认";
+  const reasoning = agent.modelConfig?.reasoningLevel;
+  return (
+    <>
+      <section className="room-side-section">
+        <header className="room-side-head">
+          <h2>对话状态</h2>
+          <span className={connected ? "live on" : "live off"}>
+            {connected ? "实时已连接" : "重连中…"}
+          </span>
+        </header>
+        <dl className="room-side-facts">
+          <div>
+            <dt>运行中</dt>
+            <dd>{runningCount > 0 ? `${runningCount} 个` : "空闲"}</dd>
+          </div>
+          <div>
+            <dt>Harness</dt>
+            <dd>
+              <span className="badge badge-harness">{agent.harness}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>模型</dt>
+            <dd>
+              <span className="chip chip-mono">
+                {model}
+                {typeof reasoning === "string" && reasoning.trim() !== ""
+                  ? ` · ${reasoning}`
+                  : ""}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>沙盒</dt>
+            <dd>
+              <span className="room-side-path" title={room.workspaceDir}>
+                {room.workspaceDir}
+              </span>
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="room-side-section">
+        <header className="room-side-head">
+          <h2>权限</h2>
+        </header>
+        <dl className="room-side-facts">
+          <div>
+            <dt>权限模式</dt>
+            <dd>
+              <select
+                className="room-side-select"
+                aria-label="直聊权限模式"
+                value={room.permissionMode}
+                disabled={permissionSaving}
+                onChange={(event) => {
+                  onChangePermission(
+                    event.target.value as Room["permissionMode"],
+                  );
+                }}
+              >
+                {(["plan", "auto", "full"] as const).map((mode) => (
+                  <option key={mode} value={mode}>
+                    {PERMISSION_MODE_LABELS[mode]}
+                  </option>
+                ))}
+              </select>
+              <span className="room-side-note">
+                {permissionSaving
+                  ? "保存中…"
+                  : PERMISSION_MODE_HINTS[room.permissionMode]}
+              </span>
+            </dd>
+          </div>
+        </dl>
+      </section>
+    </>
+  );
+}
+
 /**
  * 智能体直聊页：`/chat/room/:roomId`。
  *
@@ -234,9 +417,13 @@ export default function DirectChatPage() {
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
   const [clearNotice, setClearNotice] = useState<string | null>(null);
+  const [directSideOpen, setDirectSideOpen] = useState(false);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentKeyRef = useRef(0);
+  const sideToggleRef = useRef<HTMLButtonElement | null>(null);
+  const sideCloseRef = useRef<HTMLButtonElement | null>(null);
+  const sidebarWasOpenRef = useRef(false);
   const pendingAttachmentsRef = useRef<PendingAttachment[]>([]);
 
   const chat = useRoomChat(roomId, { onError: setError });
@@ -325,7 +512,7 @@ export default function DirectChatPage() {
     };
   }, [roomId]);
 
-  // 顶栏只显示对话标题与沙盒目录；操作入口留在页内。
+  // 顶栏只显示智能体身份；状态与操作收进右侧图标栏和抽屉。
   useEffect(() => {
     setChrome(
       agent === null
@@ -334,11 +521,29 @@ export default function DirectChatPage() {
             title: `与 ${agent.name} 对话`,
             backTo: "/agents",
             backLabel: "返回智能体",
-            meta: room?.workspaceDir,
           },
     );
     return () => setChrome(null);
-  }, [agent, room, setChrome]);
+  }, [agent, setChrome]);
+
+  // 侧栏默认收起；打开时焦点进入浮层，关闭时还给 rail 开关，Esc 关闭。
+  useEffect(() => {
+    if (directSideOpen) {
+      sidebarWasOpenRef.current = true;
+      sideCloseRef.current?.focus();
+      const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+        if (event.key === "Escape") {
+          setDirectSideOpen(false);
+        }
+      };
+      window.addEventListener("keydown", closeOnEscape);
+      return () => window.removeEventListener("keydown", closeOnEscape);
+    }
+    if (sidebarWasOpenRef.current) {
+      sidebarWasOpenRef.current = false;
+      sideToggleRef.current?.focus();
+    }
+  }, [directSideOpen]);
 
   const changePermissionMode = async (mode: Room["permissionMode"]) => {
     if (room === null || permissionSaving) {
@@ -520,81 +725,69 @@ export default function DirectChatPage() {
         {announcement}
       </p>
 
-      <header className="direct-head">
-        <AgentAvatar id={agent.id} name={agent.name} size="md" />
-        <div className="direct-head-body">
-          <div className="direct-head-title">
-            <h1>{agent.name}</h1>
-            <span className={connected ? "live on" : "live off"}>
-              {connected ? "实时已连接" : "重连中…"}
-            </span>
-            {runningCount > 0 && (
-              <span className="direct-running" role="status">
-                运行中 · {runningCount}
-              </span>
-            )}
-          </div>
-          <p className="direct-head-meta">
-            <span className="badge badge-harness">{agent.harness}</span>
-            <span className="chip chip-mono">
-              {agent.modelConfig?.model ?? "默认"}
-              {typeof agent.modelConfig?.reasoningLevel === "string" &&
-              agent.modelConfig.reasoningLevel.trim() !== ""
-                ? ` · ${agent.modelConfig.reasoningLevel}`
-                : ""}
-            </span>
-            <span className="direct-sandbox" title={room.workspaceDir}>
-              沙盒：{room.workspaceDir}
-            </span>
-          </p>
-        </div>
-        <div className="direct-head-actions">
-          <label className="direct-permission">
-            <span className="field-label">权限</span>
-            <select
-              value={room.permissionMode}
-              disabled={permissionSaving}
-              onChange={(event) =>
-                void changePermissionMode(
-                  event.target.value as Room["permissionMode"],
-                )
-              }
+      <div className={`direct-layout${directSideOpen ? " side-open" : ""}`}>
+        <div className="direct-main">
+          <div
+            className="direct-rail"
+            role="toolbar"
+            aria-label="对话操作"
+            aria-orientation="vertical"
+          >
+            <button
+              type="button"
+              className="direct-rail-button"
+              title="运行记录"
+              aria-label="运行记录"
+              onClick={() => navigate(`/rooms/${roomId}/runs`)}
             >
-              {(["plan", "auto", "full"] as const).map((mode) => (
-                <option key={mode} value={mode}>
-                  {PERMISSION_MODE_LABELS[mode]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => setSessionPanelOpen(true)}
-          >
-            会话
-          </button>
-          <Link
-            className="btn btn-secondary btn-sm"
-            to={`/rooms/${roomId}/runs`}
-          >
-            运行记录
-          </Link>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => {
-              setClearError(null);
-              setClearNotice(null);
-              setClearOpen(true);
-            }}
-          >
-            清屏
-          </button>
-        </div>
-      </header>
+              <HistoryIcon />
+            </button>
+            <button
+              type="button"
+              className="direct-rail-button"
+              title="会话"
+              aria-label="会话"
+              onClick={() => setSessionPanelOpen(true)}
+            >
+              <SessionsIcon />
+            </button>
+            <button
+              type="button"
+              className="direct-rail-button is-danger"
+              title="清屏"
+              aria-label="清屏"
+              onClick={() => {
+                setClearError(null);
+                setClearNotice(null);
+                setClearOpen(true);
+              }}
+            >
+              <TrashIcon />
+            </button>
+            <button
+              ref={sideToggleRef}
+              type="button"
+              className="direct-rail-button"
+              title={directSideOpen ? "收起侧栏" : "展开侧栏"}
+              aria-label={directSideOpen ? "收起侧栏" : "展开侧栏"}
+              aria-expanded={directSideOpen}
+              aria-controls="direct-side"
+              onClick={() => setDirectSideOpen((open) => !open)}
+            >
+              <PanelIcon />
+            </button>
+          </div>
 
-      <div className="chat-shell direct-chat-shell">
+          <header className="direct-head">
+            <AgentAvatar id={agent.id} name={agent.name} size="md" />
+            <div className="direct-head-body">
+              <div className="direct-head-title">
+                <h1>{agent.name}</h1>
+              </div>
+            </div>
+          </header>
+
+      <div className="chat-shell">
         <div className="chat-panel">
           <div className="message-list" ref={listRef} onScroll={onListScroll}>
             {messages.length === 0 ? (
@@ -746,6 +939,40 @@ export default function DirectChatPage() {
           </form>
         </div>
       </div>
+
+        </div>
+
+        <aside id="direct-side" className="direct-side" aria-label="对话侧栏">
+          <div className="room-side-top">
+            <span>对话面板</span>
+            <button
+              ref={sideCloseRef}
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setDirectSideOpen(false)}
+            >
+              关闭
+            </button>
+          </div>
+          <DirectChatSideFacts
+            agent={agent}
+            room={room}
+            connected={connected}
+            runningCount={runningCount}
+            permissionSaving={permissionSaving}
+            onChangePermission={(mode) => void changePermissionMode(mode)}
+          />
+        </aside>
+      </div>
+
+      {directSideOpen && (
+        <button
+          type="button"
+          className="direct-side-backdrop"
+          aria-label="关闭对话侧栏"
+          onClick={() => setDirectSideOpen(false)}
+        />
+      )}
 
       {sessionPanelOpen && (
         <SessionPanel

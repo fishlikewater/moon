@@ -2372,7 +2372,8 @@ svg {
   min-width: 0;
 }
 
-.room-side-backdrop {
+.room-side-backdrop,
+.direct-side-backdrop {
   position: fixed;
   inset: 0;
   z-index: 39;
@@ -2383,14 +2384,16 @@ svg {
 }
 
 /* 聊天优先：侧栏是覆盖层，任何宽度下都不挤压聊天区。 */
-.room-layout {
+.room-layout,
+.direct-layout {
   display: flex;
   flex: 1;
   min-width: 0;
   min-height: 0;
 }
 
-.room-main {
+.room-main,
+.direct-main {
   position: relative;
   display: flex;
   flex: 1;
@@ -2402,16 +2405,19 @@ svg {
   min-height: 0;
 }
 
-.room-main .chat-shell {
+.room-main .chat-shell,
+.direct-main .chat-shell {
   justify-content: stretch;
 }
 
-.room-main .chat-panel {
+.room-main .chat-panel,
+.direct-main .chat-panel {
   max-width: none;
 }
 
 /* 右侧竖排操作：位于聊天面板外的右侧空白，不遮挡消息。 */
-.room-rail {
+.room-rail,
+.direct-rail {
   position: absolute;
   top: 10px;
   right: 0;
@@ -2421,7 +2427,8 @@ svg {
   gap: 8px;
 }
 
-.room-rail-button {
+.room-rail-button,
+.direct-rail-button {
   display: grid;
   place-items: center;
   width: 34px;
@@ -2435,28 +2442,33 @@ svg {
   cursor: pointer;
 }
 
-.room-rail-button:hover {
+.room-rail-button:hover,
+.direct-rail-button:hover {
   color: var(--color-text);
   border-color: var(--color-border-strong);
 }
 
-.room-rail-button:focus-visible {
+.room-rail-button:focus-visible,
+.direct-rail-button:focus-visible {
   outline: none;
   border-color: var(--color-primary);
   box-shadow: var(--focus-ring);
 }
 
-.room-rail-button.is-danger:hover {
+.room-rail-button.is-danger:hover,
+.direct-rail-button.is-danger:hover {
   color: var(--color-danger);
   border-color: var(--color-danger-border);
 }
 
-.room-rail-button svg {
+.room-rail-button svg,
+.direct-rail-button svg {
   width: 18px;
   height: 18px;
 }
 
-.room-side {
+.room-side,
+.direct-side {
   position: fixed;
   top: 52px;
   right: 0;
@@ -2478,7 +2490,8 @@ svg {
   transition: transform var(--duration-fast) var(--ease);
 }
 
-.room-layout.side-open .room-side {
+.room-layout.side-open .room-side,
+.direct-layout.side-open .direct-side {
   visibility: visible;
   transform: translateX(0);
   pointer-events: auto;
@@ -7287,49 +7300,6 @@ details.run-activity-detail pre {
   margin-left: auto;
 }
 
-.app-sidebar-direct-picker {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 220px;
-  margin-top: 4px;
-  padding: 6px;
-  overflow-y: auto;
-  background: var(--color-surface-muted);
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-}
-
-.app-sidebar-direct-choice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 6px;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--color-text-secondary);
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.app-sidebar-direct-choice:hover {
-  background: var(--color-surface);
-  color: var(--color-text);
-}
-
-.app-sidebar-direct-choice:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.app-sidebar-direct-choice-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* ===== 直聊页 ===== */
 .direct-page {
   display: flex;
@@ -7342,10 +7312,9 @@ details.run-activity-detail pre {
 .direct-head {
   display: flex;
   flex: none;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: 10px 14px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 14px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -7372,73 +7341,6 @@ details.run-activity-detail pre {
   font-size: 16px;
 }
 
-.direct-head-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-}
-
-.direct-sandbox {
-  max-width: 100%;
-  overflow: hidden;
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.direct-running {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--color-primary-deep);
-  font-size: 11.5px;
-  font-weight: 600;
-}
-
-.direct-running::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: moon-pulse 1.2s ease-in-out infinite;
-}
-
-.direct-head-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.direct-permission {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.direct-permission .field-label {
-  color: var(--color-text-muted);
-  font-size: 11px;
-}
-
-.direct-permission select {
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-.direct-chat-shell {
-  justify-content: stretch;
-}
-
-.direct-chat-shell .chat-panel {
-  max-width: none;
-}
-
 .direct-empty {
   align-items: center;
   gap: 6px;
@@ -7448,6 +7350,136 @@ details.run-activity-detail pre {
 .direct-empty-name {
   color: var(--color-text);
   font-weight: 600;
+}
+
+/* 发起直聊选择器 */
+.direct-picker-card {
+  width: min(580px, 100%);
+  gap: 12px;
+  padding: 18px;
+}
+
+.direct-picker-card .field-hint {
+  margin: 4px 0 0;
+}
+
+.direct-picker-search {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+}
+
+.direct-picker-search:focus-visible {
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+
+.direct-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: min(52vh, 420px);
+  margin: 0;
+  padding: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.direct-picker-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 10px;
+  color: var(--color-text);
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.direct-picker-option.is-active {
+  background: var(--color-surface-muted);
+  border-color: var(--color-border-strong);
+}
+
+.direct-picker-option:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.direct-picker-option-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.direct-picker-option-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.direct-picker-option-name {
+  font-weight: 600;
+}
+
+.direct-picker-option-existing {
+  padding: 1px 6px;
+  color: var(--color-text-muted);
+  font-size: 10.5px;
+  background: var(--color-surface-muted);
+  border-radius: 999px;
+}
+
+.direct-picker-option-model {
+  align-self: flex-start;
+}
+
+.direct-picker-option-persona {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+
+.direct-picker-option-enter {
+  align-self: center;
+  color: var(--color-text-muted);
+}
+
+.direct-picker-empty {
+  padding: 20px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.direct-picker-load-error {
+  color: var(--color-danger-strong);
+}
+
+.direct-picker-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  color: var(--color-text-muted);
+  font-size: 11.5px;
+}
+
+.direct-picker-hint-busy {
+  color: var(--color-primary-deep);
 }
 
 .direct-streaming {
