@@ -15,10 +15,18 @@ import type {
   CustomHarness,
   HarnessKind,
   HarnessModelCatalog,
+  ApiProvider,
   HarnessModelOption,
   ModelConfig,
 } from "@moon/shared";
 import { api, errorMessage } from "../api/client";
+import {
+  findProviderById,
+  nextProviderSelection,
+  providerModelChoices,
+  providerReasoningChoices,
+  resolveProviderOptions,
+} from "../components/agentFormProvider";
 import {
   acpDraftModels,
   acpDraftReasoningLevels,
@@ -42,6 +50,8 @@ const HARNESS_OPTIONS: ReadonlyArray<{ value: HarnessKind; label: string }> = [
 /** 旧草稿或助手建议的模型不在目录中时，用该值保持可见。 */
 const CUSTOM_MODEL_VALUE = "__custom__";
 const CUSTOM_REASONING_VALUE = "__custom_reasoning__";
+/** 绑定的供应商已停用或已删除时用该值保持可见。 */
+const CUSTOM_PROVIDER_VALUE = "__custom_provider__";
 
 const WELCOME_TEXT =
   "你好，我是智能体创建助手。告诉我你想要一个什么样的智能体：它负责什么、擅长什么、偏好用什么模型。我会把名称、人设和模型整理成右侧草稿，你确认后就能创建。";
@@ -66,6 +76,8 @@ interface DraftForm {
   reasoningLevel: string;
   /** harness 为 acp 时选中的注册表条目；空字符串表示未选择。 */
   customHarnessId: string;
+  /** harness 为 acp 时绑定的模型供应商；空字符串表示未绑定。 */
+  apiProviderId: string;
 }
 
 const EMPTY_DRAFT: DraftForm = {
@@ -76,6 +88,7 @@ const EMPTY_DRAFT: DraftForm = {
   providerId: "",
   reasoningLevel: "",
   customHarnessId: "",
+  apiProviderId: "",
 };
 
 const ASSISTANT_STORAGE_KEY = "moon.agentBuilder.assistant";
@@ -93,6 +106,8 @@ interface SavedDraftModel {
   reasoningLevel: string;
   /** acp 上次选择的注册表条目；旧数据没有该字段。 */
   customHarnessId?: string;
+  /** acp 上次绑定的模型供应商；旧数据没有该字段。 */
+  apiProviderId?: string;
 }
 
 function readStored<T>(key: string): T | null {
@@ -131,6 +146,7 @@ function defaultDraftForm(): DraftForm {
     providerId: saved.providerId,
     reasoningLevel: saved.reasoningLevel,
     customHarnessId: saved.customHarnessId ?? "",
+    apiProviderId: saved.apiProviderId ?? "",
   };
 }
 
@@ -204,6 +220,7 @@ export default function AgentBuilderPage() {
   );
   /** 自定义 ACP agent 注册表；失败降级为空列表，创建时仍由服务端校验兜底。 */
   const [customHarnesses, setCustomHarnesses] = useState<CustomHarness[]>([]);
+  const [providers, setProviders] = useState<ApiProvider[]>([]);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -249,6 +266,27 @@ export default function AgentBuilderPage() {
         }
       });
 
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 模型供应商注册表用于 acp harness 的供应商下拉；失败降级为空列表，
+  // 提交时由服务端校验兜底。
+  useEffect(() => {
+    let cancelled = false;
+    api.apiProviders
+      .list()
+      .then((items) => {
+        if (!cancelled) {
+          setProviders(items);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProviders([]);
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -376,9 +414,36 @@ export default function AgentBuilderPage() {
     () => acpDraftModels(selectedDraftCustomHarness),
     [selectedDraftCustomHarness],
   );
-  // ACP 没有全局模型目录：候选来自所选注册表条目最近一次探测结果。
+  // 供应商三级联动：仅启用供应商可作候选；绑定后模型候选来自供应商 models。
+  const draftProviderOptions = useMemo(
+    () => resolveProviderOptions(providers),
+    [providers],
+  );
+  const selectedDraftProvider = findProviderById(providers, draft.apiProviderId);
+  const draftProviderBound =
+    draft.harness === "acp" && selectedDraftProvider !== undefined;
+  const draftProviderModels = useMemo<HarnessModelOption[]>(() => {
+    if (!draftProviderBound) {
+      return [];
+    }
+    return providerModelChoices(selectedDraftProvider).map((model) => ({
+      key: `provider:${selectedDraftProvider?.id}:${model.id}`,
+      // providerId 留空：acp 场景 draft.providerId 恒为空，selectedDraftModel 才能命中。
+      providerId: "",
+      providerName: selectedDraftProvider?.name ?? "",
+      modelId: model.id,
+      reasoningLevels: model.reasoningLevels,
+      defaultReasoningLevel: null,
+    }));
+  }, [draftProviderBound, selectedDraftProvider]);
+  // ACP 没有全局模型目录：候选来自所选注册表条目最近一次探测结果；
+  // 绑定供应商时切换为供应商 models。
   const draftModels =
-    draft.harness === "acp" ? draftAcpModels : draftCatalog?.models;
+    draft.harness === "acp"
+      ? draftProviderBound
+        ? draftProviderModels
+        : draftAcpModels
+      : draftCatalog?.models;
   const effectiveDraftCatalogLoading =
     draft.harness === "acp" ? false : draftCatalogLoading;
 
@@ -401,7 +466,11 @@ export default function AgentBuilderPage() {
     draft.providerId === "" ? draft.model : `${draft.providerId} / ${draft.model}`;
   const draftReasoningLevels =
     draft.harness === "acp"
-      ? acpDraftReasoningLevels(selectedDraftCustomHarness)
+      ? draftProviderBound
+        ? draft.model === ""
+          ? []
+          : providerReasoningChoices(selectedDraftProvider, draft.model)
+        : acpDraftReasoningLevels(selectedDraftCustomHarness)
       : (selectedDraftModel?.reasoningLevels ?? []);
   const isCustomDraftReasoning =
     draft.reasoningLevel !== "" &&
@@ -415,7 +484,9 @@ export default function AgentBuilderPage() {
   const canChooseDraftReasoning =
     !effectiveDraftCatalogLoading &&
     (draft.harness === "acp"
-      ? draftReasoningLevels.length > 0
+      ? draftProviderBound
+        ? draft.model !== "" && draftReasoningLevels.length > 0
+        : draftReasoningLevels.length > 0
       : selectedDraftModel !== null && draftReasoningLevels.length > 0);
 
   const trimmedName = draft.name.trim();
@@ -509,6 +580,8 @@ export default function AgentBuilderPage() {
         persona: next.persona,
         harness: next.harness,
         customHarnessId: keepCustomHarness ? current.customHarnessId : "",
+        // 供应商绑定同样是本机选择：沿用同一个 acp harness 时保留。
+        apiProviderId: keepCustomHarness ? current.apiProviderId : "",
         model:
           next.modelConfig?.model ?? (keepModel ? current.model : ""),
         providerId:
@@ -614,12 +687,21 @@ export default function AgentBuilderPage() {
       providerId: "",
       reasoningLevel: "",
       customHarnessId: "",
+      apiProviderId: "",
     }));
     setSuccessAgent(null);
   };
 
   const changeDraftCustomHarness = (value: string): void => {
     setDraft((current) => ({ ...current, customHarnessId: value }));
+  };
+
+  // 切换/清空供应商：模型与思考等级随候选变化清空。
+  const changeDraftApiProvider = (value: string): void => {
+    if (value === CUSTOM_PROVIDER_VALUE) {
+      return;
+    }
+    setDraft((current) => ({ ...current, ...nextProviderSelection(value) }));
   };
 
   const changeDraftModel = (value: string): void => {
@@ -680,10 +762,15 @@ export default function AgentBuilderPage() {
     setCreateError(null);
     setSuccessAgent(null);
 
+    const apiProviderId =
+      draft.harness === "acp" && draft.apiProviderId !== ""
+        ? Number(draft.apiProviderId)
+        : null;
     const hasModelConfig =
       draft.model !== "" ||
       draft.providerId !== "" ||
-      draft.reasoningLevel !== "";
+      draft.reasoningLevel !== "" ||
+      apiProviderId !== null;
     const modelConfig: ModelConfig | null = hasModelConfig
       ? {
           ...(draft.model === "" ? {} : { model: draft.model }),
@@ -691,6 +778,7 @@ export default function AgentBuilderPage() {
           ...(draft.reasoningLevel === ""
             ? {}
             : { reasoningLevel: draft.reasoningLevel }),
+          ...(apiProviderId === null ? {} : { apiProviderId }),
         }
       : null;
 
@@ -713,6 +801,7 @@ export default function AgentBuilderPage() {
         providerId: draft.providerId,
         reasoningLevel: draft.reasoningLevel,
         customHarnessId: draft.customHarnessId,
+        apiProviderId: draft.apiProviderId,
       });
       setDraft(defaultDraftForm());
       setNotes([]);
@@ -1030,6 +1119,51 @@ export default function AgentBuilderPage() {
                   <span className="field-hint">
                     注册表为空：请前往 <Link to="/harnesses">Harness 页面</Link>{" "}
                     注册。
+                  </span>
+                )}
+              </label>
+            )}
+
+            {draft.harness === "acp" && (
+              <label className="field">
+                <span className="field-label">模型供应商（可选）</span>
+                <select
+                  value={
+                    draft.apiProviderId !== "" &&
+                    findProviderById(providers, draft.apiProviderId) === undefined
+                      ? CUSTOM_PROVIDER_VALUE
+                      : draft.apiProviderId
+                  }
+                  onChange={(event) =>
+                    changeDraftApiProvider(event.target.value)
+                  }
+                  aria-label="选择模型供应商"
+                >
+                  <option value="">不绑定供应商…</option>
+                  {draftProviderOptions.map((item) => (
+                    <option key={item.id} value={String(item.id)}>
+                      {item.name}（{item.protocol === "anthropic" ? "Anthropic 兼容" : "OpenAI 兼容"}）
+                    </option>
+                  ))}
+                  {selectedDraftProvider !== undefined && !selectedDraftProvider.enabled && (
+                    <option value={String(selectedDraftProvider.id)} disabled>
+                      已停用：{selectedDraftProvider.name}（运行会报错，请更换）
+                    </option>
+                  )}
+                  {draft.apiProviderId !== "" &&
+                    findProviderById(providers, draft.apiProviderId) === undefined && (
+                      <option value={CUSTOM_PROVIDER_VALUE}>
+                        原供应商已删除
+                      </option>
+                    )}
+                </select>
+                <span className="field-hint">
+                  绑定后启动智能体时按协议注入 Base URL / API Key；模型候选切换为供应商模型。
+                </span>
+                {draftProviderOptions.length === 0 && (
+                  <span className="field-hint">
+                    没有启用的供应商：请前往 <Link to="/harnesses">Harness 页面</Link>{" "}
+                    新建。
                   </span>
                 )}
               </label>

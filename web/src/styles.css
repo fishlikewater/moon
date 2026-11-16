@@ -7117,3 +7117,69 @@ details.run-activity-detail pre {
   flex-wrap: wrap;
   margin: 4px 0 0;
 }
+
+/* ===== 模型供应商表单 ===== */
+
+.field-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-direction: row;
+}
+
+.field-checkbox input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+.field-checkbox span {
+  white-space: normal;
+}
+
+.acp-harness-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.provider-models {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.provider-models legend {
+  padding: 0 6px;
+}
+
+.provider-model-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 10px;
+}
+
+.provider-model-row:last-of-type {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.provider-model-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.provider-model-input-types {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}

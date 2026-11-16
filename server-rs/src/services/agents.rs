@@ -7,19 +7,18 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::domain::agent::{
-    Agent, CreateAgentInput, HarnessKind, ModelConfig, UpdateAgentInput,
-};
+use crate::domain::agent::{Agent, CreateAgentInput, HarnessKind, ModelConfig, UpdateAgentInput};
 use crate::error::{AppError, AppResult};
 use crate::services::rooms::require_workspace_dir_value;
 use crate::services::sessions::SessionService;
 use crate::services::{parse_id, require_body, require_non_empty_string};
-use crate::store::{AgentStore, CustomHarnessStore};
+use crate::store::{AgentStore, ApiProviderStore, CustomHarnessStore};
 
 pub struct AgentService {
     agents: AgentStore,
     sessions: Arc<SessionService>,
     custom_harnesses: CustomHarnessStore,
+    api_providers: ApiProviderStore,
 }
 
 impl AgentService {
@@ -27,11 +26,13 @@ impl AgentService {
         agents: AgentStore,
         sessions: Arc<SessionService>,
         custom_harnesses: CustomHarnessStore,
+        api_providers: ApiProviderStore,
     ) -> Self {
         Self {
             agents,
             sessions,
             custom_harnesses,
+            api_providers,
         }
     }
 
@@ -49,11 +50,11 @@ impl AgentService {
         let workspace_dir = parse_agent_workspace(body.get("workspaceDir")).await?;
         self.validate_harness_binding(harness, custom_harness_id)
             .await?;
+        self.validate_provider_ref(harness, model_config.as_ref())
+            .await?;
 
         if self.agents.get_by_name(&name).await?.is_some() {
-            return Err(AppError::validation(format!(
-                "智能体名称已存在：{name}"
-            )));
+            return Err(AppError::validation(format!("智能体名称已存在：{name}")));
         }
 
         self.agents
@@ -102,9 +103,7 @@ impl AgentService {
             let name = require_non_empty_string(Some(value), "name")?;
             if let Some(owner) = self.agents.get_by_name(&name).await? {
                 if owner.id != id {
-                    return Err(AppError::validation(format!(
-                        "智能体名称已存在：{name}"
-                    )));
+                    return Err(AppError::validation(format!("智能体名称已存在：{name}")));
                 }
             }
             patch.name = Some(name);
@@ -140,6 +139,26 @@ impl AgentService {
             self.validate_harness_binding(effective_harness, effective_custom)
                 .await?;
         }
+
+        // 供应商绑定在 modelConfig JSON 里：harness 离开 acp 时自动清空
+        // 残留的 apiProviderId（镜像 customHarnessId 清空语义），
+        // 最终组合做存在性与 harness 一致性校验。
+        // patch 显式携带 modelConfig: null（Some(None)）表示清空，
+        // effective_model_config 返回 None，不会进入本剥离分支。
+        if effective_harness != HarnessKind::Acp {
+            let carries_provider = effective_model_config(&patch, &existing)
+                .is_some_and(|config| config.contains_key("apiProviderId"));
+            if carries_provider {
+                let mut config = effective_model_config(&patch, &existing)
+                    .cloned()
+                    .unwrap_or_default();
+                config.remove("apiProviderId");
+                patch.model_config = Some(Some(config));
+            }
+        }
+        let final_config = effective_model_config(&patch, &existing);
+        self.validate_provider_ref(effective_harness, final_config)
+            .await?;
 
         let updated = self.agents.update(id, patch).await?;
         updated.ok_or_else(|| AppError::not_found(format!("智能体不存在：{id}")))
@@ -177,6 +196,18 @@ impl AgentService {
     }
 }
 
+/// 局部更新的最终 modelConfig：patch 携带时用携带值（`Some(None)` 即显式
+/// 清空），否则沿用现值。`UpdateAgentInput.model_config` 是双层 Option。
+fn effective_model_config<'a>(
+    patch: &'a UpdateAgentInput,
+    existing: &'a Agent,
+) -> Option<&'a ModelConfig> {
+    match &patch.model_config {
+        Some(value) => value.as_ref(),
+        None => existing.model_config.as_ref(),
+    }
+}
+
 fn parse_harness(value: Option<&Value>) -> AppResult<HarnessKind> {
     match value.and_then(Value::as_str) {
         Some(raw) => HarnessKind::parse(raw),
@@ -190,9 +221,11 @@ fn parse_harness(value: Option<&Value>) -> AppResult<HarnessKind> {
 fn parse_custom_harness_ref(value: Option<&Value>) -> AppResult<Option<i64>> {
     match value {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(number)) => Ok(Some(number.as_i64().ok_or_else(|| {
-            AppError::validation("customHarnessId 必须是整数")
-        })?)),
+        Some(Value::Number(number)) => {
+            Ok(Some(number.as_i64().ok_or_else(|| {
+                AppError::validation("customHarnessId 必须是整数")
+            })?))
+        }
         Some(_) => Err(AppError::validation("customHarnessId 必须是整数或 null")),
     }
 }
@@ -228,12 +261,7 @@ impl AgentService {
                         "harness 为 acp 时必须选择自定义 ACP agent",
                     ));
                 };
-                if self
-                    .custom_harnesses
-                    .get_by_id(id)
-                    .await?
-                    .is_none()
-                {
+                if self.custom_harnesses.get_by_id(id).await?.is_none() {
                     return Err(AppError::validation(format!(
                         "自定义 ACP agent 不存在：{id}"
                     )));
@@ -248,6 +276,38 @@ impl AgentService {
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// modelConfig 里的供应商绑定：数字 id 必须指向存在的供应商，
+    /// 且只有 acp harness 允许携带；null/缺失视为未绑定。
+    async fn validate_provider_ref(
+        &self,
+        harness: HarnessKind,
+        model_config: Option<&ModelConfig>,
+    ) -> AppResult<()> {
+        let Some(value) = model_config.and_then(|config| config.get("apiProviderId")) else {
+            return Ok(());
+        };
+        match value {
+            Value::Null => Ok(()),
+            Value::Number(number) => {
+                let id = number
+                    .as_i64()
+                    .ok_or_else(|| AppError::validation("modelConfig.apiProviderId 必须是整数"))?;
+                if harness != HarnessKind::Acp {
+                    return Err(AppError::validation(
+                        "只有 harness 为 acp 的智能体可以绑定模型供应商",
+                    ));
+                }
+                if self.api_providers.get_by_id(id).await?.is_none() {
+                    return Err(AppError::validation(format!("模型供应商不存在：{id}")));
+                }
+                Ok(())
+            }
+            _ => Err(AppError::validation(
+                "modelConfig.apiProviderId 必须是整数或 null",
+            )),
         }
     }
 }

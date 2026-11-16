@@ -3,6 +3,7 @@
 pub mod acp_registry;
 pub mod agent_builder;
 pub mod agents;
+pub mod api_providers;
 pub mod attachments;
 pub mod builtin_moderator;
 pub mod chat;

@@ -24,6 +24,9 @@ const pidPath = argValue("--pid-file");
 const failLoad = process.argv.includes("--fail-load");
 const legacyModels = process.argv.includes("--legacy-models");
 const hangHandshake = process.argv.includes("--hang-handshake");
+// --echo-env KEY：每轮回复首行回显 `ENV[KEY]=<当前进程环境值>`，
+// 供 Moon 验证 spawn env 注入（供应商 BASE_URL/API_KEY）。
+const echoEnvKey = argValue("--echo-env");
 
 // 供超时测试断言进程确实被终止；写入失败不影响协议行为。
 if (pidPath) {
@@ -261,6 +264,12 @@ async function runPrompt(message) {
       });
     }
   };
+
+  if (echoEnvKey) {
+    chunks(`ENV[${echoEnvKey}]=${process.env[echoEnvKey] ?? ""}`);
+    respond("end_turn");
+    return;
+  }
 
   if (mode === "hang") {
     // 超时测试：握手正常完成，收到 prompt 后保持静默并保活，

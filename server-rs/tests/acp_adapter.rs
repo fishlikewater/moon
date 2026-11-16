@@ -43,9 +43,10 @@ struct TestHarness {
 async fn setup_fake_harness(extra_args: Vec<String>) -> TestHarness {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path().join("moon.db")).await.unwrap();
-    let state = AppState::new_with_options(db, dir.path().join("sessions"), AppStateOptions::default())
-        .await
-        .unwrap();
+    let state =
+        AppState::new_with_options(db, dir.path().join("sessions"), AppStateOptions::default())
+            .await
+            .unwrap();
 
     let workspace = dir.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -83,10 +84,7 @@ fn run_input(harness: &TestHarness, prompt: &str, session: Option<RunSessionCont
     }
 }
 
-async fn collect_events(
-    adapter: Arc<dyn HarnessAdapter>,
-    input: RunInput,
-) -> Vec<RunEvent> {
+async fn collect_events(adapter: Arc<dyn HarnessAdapter>, input: RunInput) -> Vec<RunEvent> {
     let mut events = Vec::new();
     let mut stream = adapter.run(input);
     while let Some(item) = stream.next().await {
@@ -108,6 +106,7 @@ async fn acp_adapter_emits_expected_event_sequence() {
     let harness = setup_fake_harness(Vec::new()).await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -168,6 +167,7 @@ async fn acp_adapter_enforces_workspace_whitelist() {
     let harness = setup_fake_harness(Vec::new()).await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -193,7 +193,8 @@ async fn acp_adapter_enforces_workspace_whitelist() {
         run_input(&harness, &format!("READ:{}", outside.display()), None),
     )
     .await;
-    let escaped_final = final_text(&escaped).expect("越界读取也应有 Final（fake agent 回显拒绝原因）");
+    let escaped_final =
+        final_text(&escaped).expect("越界读取也应有 Final（fake agent 回显拒绝原因）");
     assert!(
         escaped_final.contains("READ_FAIL:"),
         "越界读取未被拒绝：{escaped_final}"
@@ -224,7 +225,10 @@ async fn acp_adapter_enforces_workspace_whitelist() {
             .contains("WRITE_OK"),
         "白名单内写入失败：{inside_write:?}"
     );
-    assert_eq!(std::fs::read_to_string(&inside_target).unwrap(), "工作区写入");
+    assert_eq!(
+        std::fs::read_to_string(&inside_target).unwrap(),
+        "工作区写入"
+    );
 
     let outside_target = harness.dir.path().join("outside-write.txt");
     let outside_write = collect_events(
@@ -241,20 +245,13 @@ async fn acp_adapter_enforces_workspace_whitelist() {
         outside_final.contains("WRITE_FAIL:"),
         "越界写入未被拒绝：{outside_final}"
     );
-    assert!(
-        !outside_target.exists(),
-        "越界写入不应产生文件"
-    );
+    assert!(!outside_target.exists(), "越界写入不应产生文件");
 
     // 中间目录缺失的新文件：写入应落在白名单内完整路径（父目录回退不丢层级）。
     let nested = harness.workspace.join("newdir").join("nested.txt");
     let nested_write = collect_events(
         adapter.clone(),
-        run_input(
-            &harness,
-            &format!("WRITE:{}::嵌套", nested.display()),
-            None,
-        ),
+        run_input(&harness, &format!("WRITE:{}::嵌套", nested.display()), None),
     )
     .await;
     assert!(
@@ -268,15 +265,10 @@ async fn acp_adapter_enforces_workspace_whitelist() {
     // 悬空符号链接：目标不存在，任何层级的符号链接都必须被拒绝。
     let link = harness.workspace.join("dangling.link");
     #[cfg(windows)]
-    let create_link = std::os::windows::fs::symlink_file(
-        harness.dir.path().join("no-such-target"),
-        &link,
-    );
+    let create_link =
+        std::os::windows::fs::symlink_file(harness.dir.path().join("no-such-target"), &link);
     #[cfg(unix)]
-    let create_link = std::os::unix::fs::symlink(
-        harness.dir.path().join("no-such-target"),
-        &link,
-    );
+    let create_link = std::os::unix::fs::symlink(harness.dir.path().join("no-such-target"), &link);
     match create_link {
         Ok(()) => {
             let escape = collect_events(
@@ -316,6 +308,7 @@ async fn acp_adapter_resumes_session_when_reuse_enabled() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -401,6 +394,7 @@ async fn acp_adapter_skips_load_when_agent_lacks_capability() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -446,8 +440,11 @@ async fn acp_adapter_skips_load_when_agent_lacks_capability() {
 async fn acp_adapter_reports_missing_custom_harness() {
     require_node();
     let harness = setup_fake_harness(Vec::new()).await;
-    let adapter: Arc<dyn HarnessAdapter> =
-        Arc::new(AcpAdapter::new(harness.state.custom_harness_store.clone(), None));
+    let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+        None,
+    ));
 
     let mut error = None;
     let mut stream = adapter.run(run_input(&harness, "任何输入", None));
@@ -467,6 +464,7 @@ async fn acp_adapter_passes_additional_directories_into_scope() {
     let harness = setup_fake_harness(Vec::new()).await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -504,7 +502,9 @@ async fn acp_adapter_passes_additional_directories_into_scope() {
     )
     .await;
     assert!(
-        final_text(&write).expect("附加目录写入应有 Final").contains("WRITE_OK"),
+        final_text(&write)
+            .expect("附加目录写入应有 Final")
+            .contains("WRITE_OK"),
         "附加目录写入失败：{write:?}"
     );
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "附加写入");
@@ -521,6 +521,7 @@ async fn acp_adapter_passes_additional_directories_into_scope() {
     .await;
     let recorded_adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         recorded_harness.state.custom_harness_store.clone(),
+        recorded_harness.state.api_provider_store.clone(),
         Some(recorded_harness.custom_harness_id),
     ));
     let recorded_extra = recorded_harness.dir.path().join("extra-recorded");
@@ -554,6 +555,7 @@ async fn acp_adapter_auto_selects_allow_permission_option() {
     let harness = setup_fake_harness(Vec::new()).await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -579,6 +581,7 @@ async fn acp_adapter_applies_room_permission_mode() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -630,6 +633,7 @@ async fn agent_reasoning_level_overrides_permission_mode() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -674,6 +678,7 @@ async fn unknown_reasoning_level_falls_back_to_permission_mode() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -721,6 +726,7 @@ async fn acp_adapter_applies_agent_model_and_skips_unknown() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -751,6 +757,7 @@ async fn acp_adapter_applies_agent_model_and_skips_unknown() {
     .await;
     let unknown_adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         unknown_harness.state.custom_harness_store.clone(),
+        unknown_harness.state.api_provider_store.clone(),
         Some(unknown_harness.custom_harness_id),
     ));
     let mut unknown_input = run_input(&unknown_harness, "未知模型", None);
@@ -797,14 +804,13 @@ async fn default_factory_builds_acp_adapter_from_registry() {
         }))
         .await
         .unwrap();
-    assert_eq!(
-        agent.harness,
-        moon_server::domain::agent::HarnessKind::Acp
-    );
+    assert_eq!(agent.harness, moon_server::domain::agent::HarnessKind::Acp);
     assert_eq!(agent.custom_harness_id, Some(harness.custom_harness_id));
 
-    let factory: AdapterFactory =
-        moon_server::adapters::default_adapter_factory(harness.state.custom_harness_store.clone());
+    let factory: AdapterFactory = moon_server::adapters::default_adapter_factory(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+    );
     let adapter = factory(&agent).expect("默认工厂应能构造 acp 适配器");
     let events = collect_events(adapter, run_input(&harness, "你好", None)).await;
     let text = final_text(&events).expect("默认工厂链路应有 Final");
@@ -825,6 +831,7 @@ async fn acp_adapter_times_out_and_terminates_agent() {
 
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
     let mut input = run_input(&harness, "挂起等待", None);
@@ -971,6 +978,7 @@ async fn acp_adapter_falls_back_to_new_session_when_load_fails() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -990,7 +998,12 @@ async fn acp_adapter_falls_back_to_new_session_when_load_fails() {
             "第二问",
             Some(RunSessionContext {
                 harness_session_id: Some(first_session.clone()),
-                storage_dir: harness.dir.path().join("storage").to_string_lossy().to_string(),
+                storage_dir: harness
+                    .dir
+                    .path()
+                    .join("storage")
+                    .to_string_lossy()
+                    .to_string(),
                 last_context_message_id: 0,
             }),
         ),
@@ -1042,6 +1055,7 @@ async fn acp_adapter_uses_set_model_for_legacy_models_contract() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -1080,11 +1094,14 @@ async fn acp_adapter_session_mode_overrides_permission_mode() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
     let mut input = run_input(&harness, "会话模式优先", None);
-    input.config = json!({ "sessionMode": "bypassPermissions" }).as_object().cloned();
+    input.config = json!({ "sessionMode": "bypassPermissions" })
+        .as_object()
+        .cloned();
     input.permission_mode = Some(RoomPermissionMode::Auto);
     let events = collect_events(adapter, input).await;
     assert!(
@@ -1135,6 +1152,7 @@ async fn acp_adapter_unknown_session_mode_falls_back() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -1180,6 +1198,7 @@ async fn acp_adapter_reasoning_level_applies_to_thinking_option() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -1225,6 +1244,7 @@ async fn acp_adapter_session_mode_and_thinking_apply_independently() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -1266,6 +1286,7 @@ async fn acp_adapter_session_mode_wins_over_legacy_reasoning_mode() {
     .await;
     let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
         harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
         Some(harness.custom_harness_id),
     ));
 
@@ -1385,10 +1406,7 @@ async fn acp_probe_preflight_failure_persists_error() {
 #[tokio::test]
 async fn acp_probe_failure_persists_then_success_clears() {
     require_node();
-    let harness = setup_fake_harness(vec![
-        "--hang-handshake".to_string(),
-    ])
-    .await;
+    let harness = setup_fake_harness(vec!["--hang-handshake".to_string()]).await;
     // 先探测：握手挂起触发超时（钳制下界 1 秒），失败应落库。
     let error = harness
         .state
@@ -1444,3 +1462,221 @@ async fn acp_probe_failure_persists_then_success_clears() {
     assert!(stored.probe_failed_at.is_none());
 }
 
+/// 供应商注入：绑定后 BASE_URL 覆盖手填同名词；未绑定时手填值原样保留。
+#[tokio::test]
+async fn acp_provider_injection_overrides_hand_written_env() {
+    require_node();
+    let harness = setup_fake_harness(vec![
+        "--echo-env".to_string(),
+        "ANTHROPIC_BASE_URL".to_string(),
+    ])
+    .await;
+
+    // 手填同名词：未绑供应商时应原样进入子进程 env。
+    let mut hand_written = BTreeMap::new();
+    hand_written.insert(
+        "ANTHROPIC_BASE_URL".to_string(),
+        "https://handwritten.example".to_string(),
+    );
+    harness
+        .state
+        .custom_harness_store
+        .update(
+            harness.custom_harness_id,
+            UpdateCustomHarnessInput {
+                env: Some(hand_written),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let provider = harness
+        .state
+        .api_provider_store
+        .create(
+            "DeepSeek",
+            moon_server::domain::provider::ProviderProtocol::Anthropic,
+            "https://provider.example/anthropic",
+            "sk-provider",
+            true,
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+        Some(harness.custom_harness_id),
+    ));
+
+    // 绑定供应商：注入值覆盖手填。
+    let mut config: moon_server::domain::agent::ModelConfig = serde_json::from_value(json!({
+        "apiProviderId": provider.id
+    }))
+    .unwrap();
+    let bound_input = RunInput {
+        config: Some(config.clone()),
+        ..run_input(&harness, "ECHO", None)
+    };
+    let bound_text = final_text(&collect_events(adapter.clone(), bound_input).await)
+        .expect("绑定供应商的运行应有最终文本");
+    assert!(
+        bound_text.contains("ENV[ANTHROPIC_BASE_URL]=https://provider.example/anthropic"),
+        "注入值应覆盖手填：{bound_text}"
+    );
+    assert!(
+        !bound_text.contains("handwritten.example"),
+        "手填同名词不应残留"
+    );
+
+    // 未绑定（config 无 apiProviderId）：手填值原样保留。
+    config.remove("apiProviderId");
+    let unbound_input = RunInput {
+        config: Some(config),
+        ..run_input(&harness, "ECHO", None)
+    };
+    let unbound_text = final_text(&collect_events(adapter, unbound_input).await)
+        .expect("未绑定供应商的运行应有最终文本");
+    assert!(
+        unbound_text.contains("ENV[ANTHROPIC_BASE_URL]=https://handwritten.example"),
+        "未绑定时手填 env 应原样保留：{unbound_text}"
+    );
+}
+
+/// 供应商失效（不存在 / 已停用）时运行失败且错误可读，不 spawn。
+#[tokio::test]
+async fn acp_provider_missing_or_disabled_fails_readable() {
+    require_node();
+    let harness = setup_fake_harness(vec![
+        "--echo-env".to_string(),
+        "ANTHROPIC_BASE_URL".to_string(),
+    ])
+    .await;
+
+    let disabled = harness
+        .state
+        .api_provider_store
+        .create(
+            "停用的供应商",
+            moon_server::domain::provider::ProviderProtocol::Anthropic,
+            "https://disabled.example",
+            "key",
+            false,
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+        Some(harness.custom_harness_id),
+    ));
+
+    let run_with_provider = |provider_id: i64| {
+        let adapter = adapter.clone();
+        let harness_ref = &harness;
+        async move {
+            let config: moon_server::domain::agent::ModelConfig =
+                serde_json::from_value(json!({ "apiProviderId": provider_id })).unwrap();
+            let input = RunInput {
+                config: Some(config),
+                ..run_input(harness_ref, "ECHO", None)
+            };
+            let mut events = Vec::new();
+            let mut stream = adapter.run(input);
+            while let Some(item) = stream.next().await {
+                events.push(item);
+            }
+            events
+        }
+    };
+
+    // 不存在的供应商：错误可读。
+    let missing_events = run_with_provider(999_999).await;
+    let missing_error = missing_events
+        .iter()
+        .find_map(|item| item.as_ref().err())
+        .expect("不存在的供应商应产生错误");
+    assert!(
+        missing_error.message.contains("模型供应商不存在"),
+        "错误应可读：{missing_error:?}"
+    );
+
+    // 已停用供应商：错误可读且提及停用。
+    let disabled_events = run_with_provider(disabled.id).await;
+    let disabled_error = disabled_events
+        .iter()
+        .find_map(|item| item.as_ref().err())
+        .expect("停用供应商应产生错误");
+    assert!(
+        disabled_error.message.contains("已停用"),
+        "错误应提及停用：{disabled_error:?}"
+    );
+    // fake agent 未被 spawn：不应有任何 Final 文本。
+    assert!(
+        disabled_events
+            .iter()
+            .all(|item| !matches!(item, Ok(RunEvent::Final(_)))),
+        "停用供应商不应启动 agent"
+    );
+}
+
+/// 编排链路 + openai 协议：经真实默认工厂构造适配器，
+/// agent.model_config 的 apiProviderId 透传 RunInput.config 后按 openai 映射注入。
+#[tokio::test]
+async fn acp_provider_openai_injection_via_default_factory() {
+    require_node();
+    let harness = setup_fake_harness(vec![
+        "--echo-env".to_string(),
+        "OPENAI_BASE_URL".to_string(),
+    ])
+    .await;
+    let provider = harness
+        .state
+        .api_provider_store
+        .create(
+            "OpenAI 兼容冒烟",
+            moon_server::domain::provider::ProviderProtocol::Openai,
+            "https://openai.example/v1",
+            "sk-openai",
+            true,
+            &[],
+        )
+        .await
+        .unwrap();
+    let agent = moon_server::domain::agent::Agent {
+        id: 91,
+        name: "openai-bound".to_string(),
+        persona: "复核冒烟".to_string(),
+        harness: moon_server::domain::agent::HarnessKind::Acp,
+        model_config: Some(
+            serde_json::from_value(json!({
+                "apiProviderId": provider.id,
+                "model": "gpt-x"
+            }))
+            .unwrap(),
+        ),
+        builtin_role: None,
+        custom_harness_id: Some(harness.custom_harness_id),
+        workspace_dir: None,
+        created_at: 1,
+    };
+    let factory = moon_server::adapters::default_adapter_factory(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+    );
+    let adapter = factory(&agent).expect("默认工厂应能构造 acp 适配器");
+    let input = RunInput {
+        config: agent.model_config.clone(),
+        ..run_input(&harness, "ECHO", None)
+    };
+    let text =
+        final_text(&collect_events(adapter, input).await).expect("经默认工厂的运行应有最终文本");
+    assert!(
+        text.contains("ENV[OPENAI_BASE_URL]=https://openai.example/v1"),
+        "openai 协议应注入 OPENAI_BASE_URL：{text}"
+    );
+}

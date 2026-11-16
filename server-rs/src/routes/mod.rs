@@ -3,6 +3,7 @@
 pub mod acp_registry;
 pub mod agent_builder;
 pub mod agents;
+pub mod api_providers;
 pub mod attachments;
 pub mod collaborations;
 pub mod custom_harnesses;
@@ -28,6 +29,5 @@ pub fn parse_json_body(bytes: &Bytes) -> AppResult<Value> {
     if bytes.is_empty() {
         return Ok(Value::Object(Map::new()));
     }
-    serde_json::from_slice(bytes)
-        .map_err(|_| AppError::validation("请求体不是合法的 JSON"))
+    serde_json::from_slice(bytes).map_err(|_| AppError::validation("请求体不是合法的 JSON"))
 }

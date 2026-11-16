@@ -22,6 +22,8 @@ export interface ModelConfig {
   reasoningLevel?: string;
   /** ACP 会话模式（agent 宣告的 mode id）；运行时经 session/set_mode 下发，优先于房间权限映射。 */
   sessionMode?: string;
+  /** 绑定的模型供应商 id（api_providers）；仅 harness=acp 允许携带。 */
+  apiProviderId?: number;
   [key: string]: unknown;
 }
 
@@ -180,6 +182,52 @@ export interface CustomHarnessCreateInput {
 }
 
 export type CustomHarnessUpdateInput = Partial<CustomHarnessCreateInput>;
+
+/** 模型供应商协议；决定 spawn 注入的 env 键名组。 */
+export type ProviderProtocol = "anthropic" | "openai";
+
+/** 模型支持的输入类型全集（前端展示常量在 web 侧本地维护）。 */
+export type ProviderModelInputType = "text" | "image" | "video";
+
+/** 供应商下的一个模型及其高级属性（对齐 ZCode 桌面端模型管理的关键设置）。 */
+export interface ProviderModel {
+  id: string;
+  name: string;
+  /** 上下文窗口（tokens）；null 表示未设置。 */
+  contextWindow: number | null;
+  /** 支持的思考等级；空数组表示未配置。 */
+  reasoningLevels: string[];
+  /** 支持的输入类型；空数组视为仅文本。 */
+  inputTypes: string[];
+}
+
+/** 模型供应商注册表条目。 */
+export interface ApiProvider {
+  id: number;
+  name: string;
+  protocol: ProviderProtocol;
+  baseUrl: string;
+  /** 本地明文存储（与 custom_harnesses.env 同一先例）。 */
+  apiKey: string;
+  enabled: boolean;
+  models: ProviderModel[];
+  /** 绑定该供应商的智能体数量；服务端实时统计。 */
+  agentCount: number;
+  /** epoch 毫秒 */
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ApiProviderCreateInput {
+  name: string;
+  protocol: ProviderProtocol;
+  baseUrl: string;
+  apiKey?: string;
+  enabled?: boolean;
+  models?: ProviderModel[];
+}
+
+export type ApiProviderUpdateInput = Partial<ApiProviderCreateInput>;
 
 export interface Agent {
   id: number;

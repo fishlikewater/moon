@@ -5,6 +5,7 @@ import {
   shouldShowOnboarding,
 } from "../components/AcpOnboardingGuide";
 import { AcpHarnessRegistry, acpUsableFromItems } from "../components/AcpHarnessRegistry";
+import { ApiProviderRegistry } from "../components/ApiProviderRegistry";
 import { HarnessOverview } from "../components/HarnessOverview";
 import { PageHeader } from "../components/layout/PageHeader";
 import { CATALOG_READABLE_KINDS } from "../harnessCatalog";
@@ -48,6 +49,7 @@ export default function HarnessesPage() {
       />
       <HarnessOverview states={catalogs} acpCount={acpCount} />
       <AcpHarnessRegistry onChanged={handleRegistryChanged} />
+      <ApiProviderRegistry />
     </div>
   );
 }

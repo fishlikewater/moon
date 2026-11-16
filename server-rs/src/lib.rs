@@ -31,6 +31,7 @@ use crate::queue::RoomRunQueue;
 use crate::services::acp_registry::AcpRegistryService;
 use crate::services::agent_builder::{AgentBuilderService, AgentBuilderServiceOptions};
 use crate::services::agents::AgentService;
+use crate::services::api_providers::ApiProviderService;
 use crate::services::attachments::AttachmentService;
 use crate::services::builtin_moderator::BuiltinModeratorService;
 use crate::services::chat::{BroadcastFn, ChatService, ChatServiceOptions};
@@ -48,8 +49,9 @@ use crate::services::task_scheduler::{spawn_loop, TaskScheduler};
 use crate::services::tasks::{TaskService, TaskServiceOptions};
 use crate::services::timeline::TimelineService;
 use crate::store::{
-    AgentStore, AttachmentStore, CollaborationStore, CustomHarnessStore, DiscussionStore,
-    MessageStore, QueueStore, RoomStore, RunStore, SessionStore, SettingsStore, TaskStore,
+    AgentStore, ApiProviderStore, AttachmentStore, CollaborationStore, CustomHarnessStore,
+    DiscussionStore, MessageStore, QueueStore, RoomStore, RunStore, SessionStore, SettingsStore,
+    TaskStore,
 };
 use crate::ws::RoomSocketHub;
 
@@ -76,6 +78,8 @@ pub struct AppState {
     pub queue: Arc<RoomRunQueue>,
     pub custom_harness_store: CustomHarnessStore,
     pub custom_harness_service: Arc<CustomHarnessService>,
+    pub api_provider_store: ApiProviderStore,
+    pub api_provider_service: Arc<ApiProviderService>,
     /// ACP registry 目录代理：CDN 拉取 + TTL 缓存 + 快照回退。
     pub acp_registry_service: Arc<AcpRegistryService>,
     pub settings_store: SettingsStore,
@@ -113,7 +117,10 @@ impl AppState {
         let discussion_store = DiscussionStore::new(db.clone());
         let collaboration_store = CollaborationStore::new(db.clone());
         let custom_harness_store = CustomHarnessStore::new(db.clone());
-        let custom_harness_service = Arc::new(CustomHarnessService::new(custom_harness_store.clone()));
+        let custom_harness_service =
+            Arc::new(CustomHarnessService::new(custom_harness_store.clone()));
+        let api_provider_store = ApiProviderStore::new(db.clone());
+        let api_provider_service = Arc::new(ApiProviderService::new(api_provider_store.clone()));
         let acp_registry_service = Arc::new(AcpRegistryService::new(include_str!(
             "assets/acp_registry_snapshot.json"
         )));
@@ -144,6 +151,7 @@ impl AppState {
             agent_store.clone(),
             session_service.clone(),
             custom_harness_store.clone(),
+            api_provider_store.clone(),
         ));
         let room_service = Arc::new(RoomService::new(
             room_store.clone(),
@@ -163,10 +171,10 @@ impl AppState {
         ));
         let adapter_factory: AdapterFactory = {
             let custom_harness_store = custom_harness_store.clone();
-            options
-                .adapter_factory
-                .clone()
-                .unwrap_or_else(|| crate::adapters::default_adapter_factory(custom_harness_store))
+            let api_provider_store = api_provider_store.clone();
+            options.adapter_factory.clone().unwrap_or_else(|| {
+                crate::adapters::default_adapter_factory(custom_harness_store, api_provider_store)
+            })
         };
         let chat = Arc::new(ChatService::new(ChatServiceOptions {
             rooms: room_store.clone(),
@@ -227,13 +235,14 @@ impl AppState {
         ));
         chat.set_discussion_service(Arc::downgrade(&discussion_service));
         chat.set_task_service(Arc::downgrade(&task_service));
-        let agent_builder_service = Arc::new(AgentBuilderService::new(AgentBuilderServiceOptions {
-            agents: agent_store,
-            adapter_factory,
-            workspace_dir: storage_root.join("agent-builder"),
-            catalog_reader: None,
-            settings: settings_service.clone(),
-        }));
+        let agent_builder_service =
+            Arc::new(AgentBuilderService::new(AgentBuilderServiceOptions {
+                agents: agent_store,
+                adapter_factory,
+                workspace_dir: storage_root.join("agent-builder"),
+                catalog_reader: None,
+                settings: settings_service.clone(),
+            }));
         let timeline_service = Arc::new(TimelineService::new(
             task_store,
             message_store.clone(),
@@ -292,6 +301,8 @@ impl AppState {
             queue,
             custom_harness_store,
             custom_harness_service,
+            api_provider_store,
+            api_provider_service,
             acp_registry_service,
             settings_store,
             settings_service,
@@ -317,6 +328,7 @@ pub fn build_app(state: AppState) -> Router {
         .merge(routes::agents::router())
         .merge(routes::acp_registry::router())
         .merge(routes::custom_harnesses::router())
+        .merge(routes::api_providers::router())
         .merge(routes::rooms::router())
         .merge(routes::messages::router())
         .merge(routes::attachments::router())

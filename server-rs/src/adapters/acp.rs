@@ -25,11 +25,11 @@ use std::time::Duration;
 use agent_client_protocol::v1::schema::{
     ClientCapabilities, ContentBlock, FileSystemCapabilities, InitializeRequest,
     LoadSessionRequest, NewSessionRequest, PermissionOptionKind, PromptRequest,
-    ReadTextFileRequest, ReadTextFileResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigId, SessionConfigOptionValue, SessionId, SessionModeId,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    StopReason, TextContent, ToolCallStatus, WriteTextFileRequest, WriteTextFileResponse,
+    ReadTextFileRequest, ReadTextFileResponse, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigId,
+    SessionConfigOptionValue, SessionId, SessionModeId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, TextContent, ToolCallStatus,
+    WriteTextFileRequest, WriteTextFileResponse,
 };
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::{
@@ -55,27 +55,33 @@ fn resolved_program(command: &str) -> (String, &'static str) {
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-use crate::domain::agent::HarnessKind;
+use crate::domain::agent::{HarnessKind, ModelConfig};
 use crate::domain::harness::{
     AcpCapabilities, AcpConfigChoice, AcpConfigOption, AcpMode, AcpModelOption, CustomHarness,
 };
 use crate::domain::room::RoomPermissionMode;
 use crate::domain::run_event::{RunEvent, RunInput};
 use crate::error::{AppError, AppResult};
-use crate::store::CustomHarnessStore;
+use crate::store::{ApiProviderStore, CustomHarnessStore};
 
 use super::types::EventStream;
 
 /// 每次运行独立 spawn 的 ACP 适配器；定义在运行时从注册表读取。
 pub struct AcpAdapter {
     store: CustomHarnessStore,
+    providers: ApiProviderStore,
     custom_harness_id: Option<i64>,
 }
 
 impl AcpAdapter {
-    pub fn new(store: CustomHarnessStore, custom_harness_id: Option<i64>) -> Self {
+    pub fn new(
+        store: CustomHarnessStore,
+        providers: ApiProviderStore,
+        custom_harness_id: Option<i64>,
+    ) -> Self {
         Self {
             store,
+            providers,
             custom_harness_id,
         }
     }
@@ -89,11 +95,14 @@ impl crate::adapters::HarnessAdapter for AcpAdapter {
     fn run(&self, input: RunInput) -> EventStream {
         let (sender, receiver) = mpsc::channel(128);
         let store = self.store.clone();
+        let providers = self.providers.clone();
         let custom_harness_id = self.custom_harness_id;
         tokio::spawn(async move {
             let result = match custom_harness_id {
                 Some(id) => match store.get_by_id(id).await {
-                    Ok(Some(harness)) => run_with_harness(&harness, input, &sender).await,
+                    Ok(Some(harness)) => {
+                        run_with_harness(&harness, &providers, input, &sender).await
+                    }
                     Ok(None) => Err(AppError::harness_run_failed(format!(
                         "自定义 ACP agent 不存在：{id}"
                     ))),
@@ -114,9 +123,12 @@ impl crate::adapters::HarnessAdapter for AcpAdapter {
 /// 一次 ACP 运行的完整流程：spawn → 握手 → prompt → 映射 → 收尾。
 async fn run_with_harness(
     harness: &CustomHarness,
+    providers: &ApiProviderStore,
     input: RunInput,
     sender: &mpsc::Sender<AppResult<RunEvent>>,
 ) -> AppResult<()> {
+    // 供应商注入在 spawn 前解析：绑定失效直接失败，不发请求不启动进程。
+    let provider_injection = resolve_provider_injection(input.config.as_ref(), providers).await?;
     let (program, source) = resolved_program(&harness.command);
     let mut command = Command::new(&program);
     command
@@ -129,6 +141,12 @@ async fn run_with_harness(
     command.creation_flags(CREATE_NO_WINDOW);
     for (key, value) in &harness.env {
         command.env(key, value);
+    }
+    // 供应商注入后置：覆盖手填同名词（绑定供应商即生效的语义）。
+    if let Some(pairs) = &provider_injection {
+        for (key, value) in pairs {
+            command.env(key, value);
+        }
     }
 
     let mut child = command.spawn().map_err(|error| {
@@ -166,18 +184,14 @@ async fn run_with_harness(
     .await;
 
     terminate_process_tree(&mut child).await;
-    let stderr_text = match tokio::time::timeout(
-        std::time::Duration::from_millis(800),
-        &mut stderr_task,
-    )
-    .await
-    {
-        Ok(Ok(text)) => text,
-        _ => {
-            stderr_task.abort();
-            String::new()
-        }
-    };
+    let stderr_text =
+        match tokio::time::timeout(std::time::Duration::from_millis(800), &mut stderr_task).await {
+            Ok(Ok(text)) => text,
+            _ => {
+                stderr_task.abort();
+                String::new()
+            }
+        };
 
     match result {
         Err(error) => {
@@ -193,6 +207,44 @@ async fn run_with_harness(
         }
         ok => ok,
     }
+}
+
+/// 解析智能体绑定的模型供应商注入（spawn env）。
+///
+/// - 未绑定（config 无 `apiProviderId`）→ `None`，行为与历史一致；
+/// - 绑定失效（不存在/已停用）→ 可读错误，不 spawn；
+/// - 正常 → 按协议映射的 BASE_URL/API_KEY 键值对，覆盖手填同名词。
+async fn resolve_provider_injection(
+    config: Option<&ModelConfig>,
+    providers: &ApiProviderStore,
+) -> AppResult<Option<Vec<(String, String)>>> {
+    let provider_id = config
+        .and_then(|config| config.get("apiProviderId"))
+        .and_then(Value::as_i64);
+    let Some(id) = provider_id else {
+        return Ok(None);
+    };
+    let provider = providers.get_by_id(id).await?.ok_or_else(|| {
+        AppError::harness_run_failed(format!(
+            "模型供应商不存在：{id}，请编辑智能体重新选择模型供应商"
+        ))
+    })?;
+    if !provider.enabled {
+        return Err(AppError::harness_run_failed(format!(
+            "模型供应商「{}」已停用，请启用该供应商或编辑智能体更换",
+            provider.name
+        )));
+    }
+    Ok(Some(
+        crate::domain::provider::provider_env_pairs(
+            provider.protocol,
+            &provider.base_url,
+            &provider.api_key,
+        )
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect(),
+    ))
 }
 
 /// 探测 ACP agent 能力：initialize + session/new，不发 prompt；
@@ -279,7 +331,8 @@ pub async fn probe_capabilities(
     .await;
 
     terminate_process_tree(&mut child).await;
-    let stderr_text = match tokio::time::timeout(Duration::from_millis(800), &mut stderr_task).await {
+    let stderr_text = match tokio::time::timeout(Duration::from_millis(800), &mut stderr_task).await
+    {
         Ok(Ok(text)) => text,
         _ => {
             stderr_task.abort();
@@ -299,9 +352,7 @@ pub async fn probe_capabilities(
             if tail.is_empty() {
                 Err(AppError::harness_run_failed(message))
             } else {
-                Err(AppError::harness_run_failed(format!(
-                    "{message}：{tail}"
-                )))
+                Err(AppError::harness_run_failed(format!("{message}：{tail}")))
             }
         }
         Ok(Ok(capabilities)) => Ok(capabilities),
@@ -337,7 +388,9 @@ async fn run_protocol(
                         let mut guard = lock_final(&notify_final);
                         guard.push_str(delta);
                     }
-                    send_event(&notify_sender, event).await.map_err(sdk_internal)?;
+                    send_event(&notify_sender, event)
+                        .await
+                        .map_err(sdk_internal)?;
                 }
                 Ok(())
             },
@@ -388,9 +441,11 @@ async fn run_protocol(
                             PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
                         )
                     })
-                    .map(|option| RequestPermissionOutcome::Selected(
-                        SelectedPermissionOutcome::new(option.option_id.clone()),
-                    ))
+                    .map(|option| {
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                            option.option_id.clone(),
+                        ))
+                    })
                     .unwrap_or(RequestPermissionOutcome::Cancelled);
                 responder.respond(RequestPermissionResponse::new(outcome))?;
                 Ok(())
@@ -480,14 +535,11 @@ async fn run_session(
 
 /// 构造 initialize 请求：宣告客户端能力，fs 反向读写按需开启。
 fn initialize_request() -> InitializeRequest {
-    InitializeRequest::new(agent_client_protocol::schema::ProtocolVersion::V1)
-        .client_capabilities(
-            ClientCapabilities::new().fs(
-                FileSystemCapabilities::new()
-                    .read_text_file(true)
-                    .write_text_file(true),
-            ),
-        )
+    InitializeRequest::new(agent_client_protocol::schema::ProtocolVersion::V1).client_capabilities(
+        ClientCapabilities::new().fs(FileSystemCapabilities::new()
+            .read_text_file(true)
+            .write_text_file(true)),
+    )
 }
 
 /// 新建会话；附加目录一次传入，agent 不支持时按协议忽略。
@@ -518,9 +570,7 @@ async fn create_session(
     let session_id = value
         .get("sessionId")
         .and_then(Value::as_str)
-        .ok_or_else(|| {
-            SdkError::new(ErrorCode::INTERNAL_ERROR, "ACP agent 未返回 sessionId")
-        })?;
+        .ok_or_else(|| SdkError::new(ErrorCode::INTERNAL_ERROR, "ACP agent 未返回 sessionId"))?;
     Ok((session_id.to_string(), parse_capabilities(&value)))
 }
 
@@ -698,10 +748,7 @@ fn model_config_option(capabilities: &AcpCapabilities) -> Option<&AcpConfigOptio
 }
 
 /// 房间权限模式 → agent 宣告的模式 id；只从 availableModes 中选择。
-fn map_permission_mode(
-    mode: RoomPermissionMode,
-    capabilities: &AcpCapabilities,
-) -> Option<String> {
+fn map_permission_mode(mode: RoomPermissionMode, capabilities: &AcpCapabilities) -> Option<String> {
     let candidates: &[&str] = match mode {
         RoomPermissionMode::Plan => &["plan", "architect", "ask"],
         RoomPermissionMode::Auto => &["acceptedits", "accept_edits", "code", "default"],
@@ -818,7 +865,10 @@ async fn apply_session_preferences(
                 // 未命中 modes：仅当也不命中思考选项候选值时才提示（既有文案保持不变），
                 // 否则思考链会成功下发而 Status 却说「未宣告」，与拆分语义相悖。
                 let hits_thinking = reasoning_config_option(capabilities).is_some_and(|option| {
-                    option.options.iter().any(|choice| choice.value == requested)
+                    option
+                        .options
+                        .iter()
+                        .any(|choice| choice.value == requested)
                 });
                 if !hits_thinking {
                     send_event(
@@ -844,7 +894,11 @@ async fn apply_session_preferences(
         let consumed_as_mode = capabilities.modes.iter().any(|mode| mode.id == requested);
         if !consumed_as_mode {
             if let Some(option) = reasoning_config_option(capabilities) {
-                if option.options.iter().any(|choice| choice.value == requested) {
+                if option
+                    .options
+                    .iter()
+                    .any(|choice| choice.value == requested)
+                {
                     if option.current_value.as_deref() != Some(requested) {
                         let result = connection
                             .send_request(SetSessionConfigOptionRequest::new(
@@ -953,7 +1007,11 @@ async fn apply_model_preference(
     };
 
     if let Some(option) = model_config_option(capabilities) {
-        if !option.options.iter().any(|choice| choice.value == requested) {
+        if !option
+            .options
+            .iter()
+            .any(|choice| choice.value == requested)
+        {
             send_event(
                 sender,
                 RunEvent::Status(format!(
@@ -1122,24 +1180,20 @@ async fn read_workspace_file(scope: &WorkspaceScope, raw: &str) -> AppResult<Str
     let path = scope.ensure_allowed(raw)?;
     tokio::fs::read_to_string(&path)
         .await
-        .map_err(|error| {
-            AppError::harness_run_failed(format!("读取工作区文件失败：{error}"))
-        })
+        .map_err(|error| AppError::harness_run_failed(format!("读取工作区文件失败：{error}")))
 }
 
 async fn write_workspace_file(scope: &WorkspaceScope, raw: &str, content: &str) -> AppResult<()> {
     let path = scope.ensure_allowed(raw)?;
     // 新文件的父目录可能尚不存在；路径已通过白名单校验，这里补齐目录。
     if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|error| {
-            AppError::harness_run_failed(format!("创建写入目录失败：{error}"))
-        })?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| AppError::harness_run_failed(format!("创建写入目录失败：{error}")))?;
     }
     tokio::fs::write(&path, content)
         .await
-        .map_err(|error| {
-            AppError::harness_run_failed(format!("写入工作区文件失败：{error}"))
-        })
+        .map_err(|error| AppError::harness_run_failed(format!("写入工作区文件失败：{error}")))
 }
 
 /// 工作区路径白名单：工作目录 + 附加目录，全部按真实路径解析后前缀匹配。
@@ -1168,9 +1222,7 @@ impl WorkspaceScope {
     fn ensure_allowed(&self, raw: &str) -> AppResult<PathBuf> {
         let candidate = PathBuf::from(raw);
         if !candidate.is_absolute() {
-            return Err(AppError::harness_run_failed(
-                "ACP 文件请求必须使用绝对路径",
-            ));
+            return Err(AppError::harness_run_failed("ACP 文件请求必须使用绝对路径"));
         }
 
         if let Ok(resolved) = candidate.canonicalize() {
@@ -1250,10 +1302,7 @@ async fn terminate_process_tree(child: &mut Child) {
 }
 
 /// 发送一条 RunEvent；下游关闭时静默结束。
-async fn send_event(
-    sender: &mpsc::Sender<AppResult<RunEvent>>,
-    event: RunEvent,
-) -> AppResult<()> {
+async fn send_event(sender: &mpsc::Sender<AppResult<RunEvent>>, event: RunEvent) -> AppResult<()> {
     sender
         .send(Ok(event))
         .await
@@ -1384,7 +1433,10 @@ mod tests {
         );
 
         let only_default = capabilities_with_modes(&[("default", "Default")]);
-        assert_eq!(map_permission_mode(RoomPermissionMode::Plan, &only_default), None);
+        assert_eq!(
+            map_permission_mode(RoomPermissionMode::Plan, &only_default),
+            None
+        );
         assert_eq!(
             map_permission_mode(RoomPermissionMode::Auto, &only_default).as_deref(),
             Some("default")
@@ -1402,10 +1454,7 @@ mod tests {
 
     #[test]
     fn map_permission_mode_matches_names_case_insensitively() {
-        let capabilities = capabilities_with_modes(&[
-            ("1", "Architect"),
-            ("2", "Ask Agent"),
-        ]);
+        let capabilities = capabilities_with_modes(&[("1", "Architect"), ("2", "Ask Agent")]);
         assert_eq!(
             map_permission_mode(RoomPermissionMode::Plan, &capabilities).as_deref(),
             Some("1")

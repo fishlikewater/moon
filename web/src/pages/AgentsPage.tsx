@@ -9,6 +9,7 @@ import {
 import { Link, useSearchParams } from "react-router-dom";
 import type {
   Agent,
+  ApiProvider,
   CustomHarness,
   HarnessKind,
   HarnessModelCatalog,
@@ -17,6 +18,13 @@ import type {
 } from "@moon/shared";
 import { api, errorMessage } from "../api/client";
 import { acpReasoningOption, acpSessionModes } from "../acpAgentCapabilities";
+import {
+  findProviderById,
+  nextProviderSelection,
+  providerModelChoices,
+  providerReasoningChoices,
+  resolveProviderOptions,
+} from "../components/agentFormProvider";
 import { AgentAvatar } from "../components/AgentAvatar";
 import { EmptyState } from "../components/layout/EmptyState";
 import { ListSkeleton } from "../components/layout/ListSkeleton";
@@ -36,6 +44,8 @@ const CUSTOM_MODEL_VALUE = "__custom__";
 const CUSTOM_REASONING_VALUE = "__custom_reasoning__";
 /** agent 不再宣告的会话模式（旧数据）用该值保持可见。 */
 const CUSTOM_SESSION_VALUE = "__custom_session__";
+/** 绑定的供应商已停用或已删除时用该值保持可见。 */
+const CUSTOM_PROVIDER_VALUE = "__custom_provider__";
 
 interface AgentFormState {
   editingId: number | null;
@@ -52,6 +62,8 @@ interface AgentFormState {
   sessionMode: string;
   /** harness 为 acp 时选中的注册表条目；空字符串表示未选择。 */
   customHarnessId: string;
+  /** harness 为 acp 时绑定的模型供应商；空字符串表示未绑定。 */
+  apiProviderId: string;
   /** 编辑时保留 modelConfig 的其他字段，避免只改模型却丢掉未知配置。 */
   baseConfig: ModelConfig | null;
 }
@@ -67,6 +79,7 @@ const EMPTY_FORM: AgentFormState = {
   reasoningLevel: "",
   sessionMode: "",
   customHarnessId: "",
+  apiProviderId: "",
   baseConfig: null,
 };
 
@@ -135,6 +148,7 @@ export default function AgentsPage() {
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [customHarnesses, setCustomHarnesses] = useState<CustomHarness[]>([]);
+  const [providers, setProviders] = useState<ApiProvider[]>([]);
   const modalRef = useRef<HTMLDivElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -154,6 +168,27 @@ export default function AgentsPage() {
     startCreate();
     setSearchParams(withoutNewParam(searchParams), { replace: true });
   }, [loading, searchParams, setSearchParams, startCreate]);
+
+  // 模型供应商注册表用于 acp harness 的供应商下拉；失败降级为空列表，
+  // 提交时由服务端校验兜底。
+  useEffect(() => {
+    let cancelled = false;
+    api.apiProviders
+      .list()
+      .then((items) => {
+        if (!cancelled) {
+          setProviders(items);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProviders([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 自定义 ACP agent 注册表用于 acp harness 的下拉；失败降级为空列表，
   // 提交时由服务端校验兜底。
@@ -295,6 +330,28 @@ export default function AgentsPage() {
           (item) => String(item.id) === form.customHarnessId,
         );
 
+  // 供应商三级联动：仅启用供应商可作候选；绑定后模型候选来自供应商 models。
+  const providerOptions = useMemo(
+    () => resolveProviderOptions(providers),
+    [providers],
+  );
+  const selectedProvider = findProviderById(providers, form.apiProviderId);
+  const providerBound = form.harness === "acp" && selectedProvider !== undefined;
+  const providerCatalogModels = useMemo<HarnessModelOption[]>(() => {
+    if (!providerBound) {
+      return [];
+    }
+    return providerModelChoices(selectedProvider).map((model) => ({
+      key: `provider:${selectedProvider?.id}:${model.id}`,
+      // providerId 留空：acp 场景 form.providerId 恒为空，selectedModel 才能命中。
+      providerId: "",
+      providerName: selectedProvider?.name ?? "",
+      modelId: model.id,
+      reasoningLevels: model.reasoningLevels,
+      defaultReasoningLevel: null,
+    }));
+  }, [providerBound, selectedProvider]);
+
   // ACP 没有全局模型目录：优先使用注册表里最近一次探测的模型候选。
   const acpCatalogModels = useMemo<HarnessModelOption[]>(() => {
     if (form.harness !== "acp" || selectedCustomHarness?.capabilities == null) {
@@ -311,7 +368,11 @@ export default function AgentsPage() {
   }, [form.harness, selectedCustomHarness]);
 
   const catalogModels =
-    form.harness === "acp" ? acpCatalogModels : catalog?.models;
+    form.harness === "acp"
+      ? providerBound
+        ? providerCatalogModels
+        : acpCatalogModels
+      : catalog?.models;
   const effectiveCatalogLoading =
     form.harness === "acp" ? false : catalogLoading;
   const modelGroups = useMemo(
@@ -355,9 +416,17 @@ export default function AgentsPage() {
   const acpModes = form.harness === "acp" ? acpSessionModes(acpCapabilities) : [];
   const acpReasoningChoices =
     form.harness === "acp" ? acpReasoningOption(acpCapabilities) : null;
+  // 绑定供应商后思考等级一律来自供应商模型（等级属于具体模型）；
+  // 未选模型为空；未绑供应商保持 ACP 探测候选。
+  const providerReasoning =
+    providerBound && form.model !== ""
+      ? providerReasoningChoices(selectedProvider, form.model)
+      : [];
   const reasoningLevels =
     form.harness === "acp"
-      ? (acpReasoningChoices ?? []).map((choice) => choice.value)
+      ? providerBound
+        ? providerReasoning
+        : (acpReasoningChoices ?? []).map((choice) => choice.value)
       : (selectedModel?.reasoningLevels ?? []);
   const isCustomReasoning =
     form.reasoningLevel !== "" && !reasoningLevels.includes(form.reasoningLevel);
@@ -379,11 +448,21 @@ export default function AgentsPage() {
   const canChooseReasoning =
     !effectiveCatalogLoading &&
     (form.harness === "acp"
-      ? (acpReasoningChoices ?? []).length > 0
+      ? providerBound
+        ? form.model !== "" && providerReasoning.length > 0
+        : (acpReasoningChoices ?? []).length > 0
       : selectedModel !== null && reasoningLevels.length > 0);
 
   const modelHints: string[] = [];
   if (form.harness === "acp") {
+    if (providerBound) {
+      const count = providerModelChoices(selectedProvider).length;
+      modelHints.push(
+        count === 0
+          ? `供应商「${selectedProvider?.name}」未配置模型；可手填模型 id，或回供应商编辑。`
+          : `模型候选来自供应商「${selectedProvider?.name}」（${count} 个）；启动时按协议注入供应商连接信息。`,
+      );
+    }
     const capabilities = selectedCustomHarness?.capabilities ?? null;
     if (selectedCustomHarness === undefined) {
       modelHints.push("选择自定义 ACP agent 后，下拉展示其最近一次探测的模型。");
@@ -447,7 +526,15 @@ export default function AgentsPage() {
 
   const reasoningHints: string[] = [];
   if (form.harness === "acp") {
-    if (selectedCustomHarness === undefined) {
+    if (providerBound) {
+      if (form.model === "") {
+        reasoningHints.push("绑定供应商后，选择模型即可从其声明的思考等级中选择。");
+      } else if (providerReasoning.length === 0) {
+        reasoningHints.push("该供应商模型未声明思考等级，运行时使用模型默认。");
+      } else {
+        reasoningHints.push("思考等级候选来自供应商模型声明。");
+      }
+    } else if (selectedCustomHarness === undefined) {
       reasoningHints.push(
         "选择自定义 ACP agent 后，可从其宣告的思考等级（模型推理能力）中选择。",
       );
@@ -495,11 +582,20 @@ export default function AgentsPage() {
       reasoningLevel: "",
       sessionMode: "",
       customHarnessId: "",
+      apiProviderId: "",
     }));
   };
 
   const changeCustomHarness = (value: string): void => {
     setForm((current) => ({ ...current, customHarnessId: value }));
+  };
+
+  // 切换/清空供应商：模型与思考等级随候选变化清空，会话模式（ACP 探测）保留。
+  const changeApiProvider = (value: string): void => {
+    if (value === CUSTOM_PROVIDER_VALUE) {
+      return;
+    }
+    setForm((current) => ({ ...current, ...nextProviderSelection(value) }));
   };
 
   const changeModel = (value: string): void => {
@@ -559,20 +655,26 @@ export default function AgentsPage() {
     const providerId = form.providerId.trim();
     const reasoningLevel = form.reasoningLevel.trim();
     const sessionMode = form.sessionMode.trim();
+    const apiProviderId =
+      form.harness === "acp" && form.apiProviderId !== ""
+        ? Number(form.apiProviderId)
+        : null;
     const {
       model: _previousModel,
       providerId: _previousProviderId,
       reasoningLevel: _previousReasoningLevel,
       sessionMode: _previousSessionMode,
+      apiProviderId: _previousApiProviderId,
       ...otherConfig
     } = form.baseConfig ?? {};
-    // 四个字段全空才不写模型配置；ACP 可以只选会话模式/思考等级不选模型，
+    // 五个字段全空才不写模型配置；ACP 可以只选会话模式/思考等级不选模型，
     // sessionMode 与 reasoningLevel 均独立于 model 保留。
     const nextModelConfig: ModelConfig | null =
       model === "" &&
       providerId === "" &&
       reasoningLevel === "" &&
-      sessionMode === ""
+      sessionMode === "" &&
+      apiProviderId === null
         ? Object.keys(otherConfig).length === 0
           ? null
           : otherConfig
@@ -582,6 +684,7 @@ export default function AgentsPage() {
             ...(providerId === "" ? {} : { providerId }),
             ...(reasoningLevel === "" ? {} : { reasoningLevel }),
             ...(sessionMode === "" ? {} : { sessionMode }),
+            ...(apiProviderId === null ? {} : { apiProviderId }),
           };
     const payload = {
       name: form.name.trim(),
@@ -664,6 +767,10 @@ export default function AgentsPage() {
       reasoningLevel,
       sessionMode,
       customHarnessId: agent.customHarnessId === null ? "" : String(agent.customHarnessId),
+      apiProviderId:
+        typeof agent.modelConfig?.apiProviderId === "number"
+          ? String(agent.modelConfig.apiProviderId)
+          : "",
       baseConfig: agent.modelConfig,
     });
     setError(null);
@@ -941,6 +1048,50 @@ export default function AgentsPage() {
               </label>
             )}
 
+            {form.harness === "acp" && (
+              <label className="field">
+                <span className="field-label">模型供应商（可选）</span>
+                <select
+                  id="agent-api-provider"
+                  value={
+                    form.apiProviderId !== "" &&
+                    findProviderById(providers, form.apiProviderId) === undefined
+                      ? CUSTOM_PROVIDER_VALUE
+                      : form.apiProviderId
+                  }
+                  onChange={(event) => changeApiProvider(event.target.value)}
+                  aria-label="选择模型供应商"
+                >
+                  <option value="">不绑定供应商…</option>
+                  {providerOptions.map((item) => (
+                    <option key={item.id} value={String(item.id)}>
+                      {item.name}（{item.protocol === "anthropic" ? "Anthropic 兼容" : "OpenAI 兼容"}）
+                    </option>
+                  ))}
+                  {selectedProvider !== undefined && !selectedProvider.enabled && (
+                    <option value={String(selectedProvider.id)} disabled>
+                      已停用：{selectedProvider.name}（运行会报错，请更换）
+                    </option>
+                  )}
+                  {form.apiProviderId !== "" &&
+                    findProviderById(providers, form.apiProviderId) === undefined && (
+                      <option value={CUSTOM_PROVIDER_VALUE}>
+                        原供应商已删除
+                      </option>
+                    )}
+                </select>
+                <span className="field-hint">
+                  绑定后启动智能体时按协议注入 Base URL / API Key；模型候选切换为供应商模型。
+                </span>
+                {providerOptions.length === 0 && (
+                  <span className="field-hint">
+                    没有启用的供应商：请前往 <Link to="/harnesses">Harness 页面</Link>{" "}
+                    新建。
+                  </span>
+                )}
+              </label>
+            )}
+
             <label className="field form-span-2">
               <span className="field-label">人设</span>
               <textarea
@@ -1096,11 +1247,17 @@ export default function AgentsPage() {
                   </option>
                 )}
                 {form.harness === "acp"
-                  ? (acpReasoningChoices ?? []).map((choice) => (
-                      <option key={choice.value} value={choice.value}>
-                        {choice.name}
-                      </option>
-                    ))
+                  ? providerBound
+                    ? providerReasoning.map((level) => (
+                        <option key={level} value={level}>
+                          {level}
+                        </option>
+                      ))
+                    : (acpReasoningChoices ?? []).map((choice) => (
+                        <option key={choice.value} value={choice.value}>
+                          {choice.name}
+                        </option>
+                      ))
                   : reasoningLevels.map((level) => (
                       <option key={level} value={level}>
                         {level}

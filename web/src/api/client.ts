@@ -5,6 +5,9 @@ import type {
   AgentRun,
   AgentSession,
   AcpProbeResponse,
+  ApiProvider,
+  ApiProviderCreateInput,
+  ApiProviderUpdateInput,
   AppSettings,
   AppSettingsResponse,
   CollaborationBatch,
@@ -259,6 +262,24 @@ export const api = {
           timeoutSecs === undefined ? {} : { timeoutSecs },
         ),
       }),
+  },
+  apiProviders: {
+    list: (): Promise<ApiProvider[]> =>
+      requestJson<ApiProvider[]>("/api/api-providers"),
+    get: (id: number): Promise<ApiProvider> =>
+      requestJson<ApiProvider>(`/api/api-providers/${id}`),
+    create: (input: ApiProviderCreateInput): Promise<ApiProvider> =>
+      requestJson<ApiProvider>("/api/api-providers", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    update: (id: number, input: ApiProviderUpdateInput): Promise<ApiProvider> =>
+      requestJson<ApiProvider>(`/api/api-providers/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      }),
+    remove: (id: number): Promise<void> =>
+      requestJson<void>(`/api/api-providers/${id}`, { method: "DELETE" }),
   },
   rooms: {
     list: (): Promise<Room[]> => requestJson<Room[]>("/api/rooms"),

@@ -11,6 +11,7 @@ pub mod discussion;
 pub mod event;
 pub mod harness;
 pub mod message;
+pub mod provider;
 pub mod room;
 pub mod run;
 pub mod run_event;

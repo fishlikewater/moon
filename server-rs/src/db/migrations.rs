@@ -11,7 +11,7 @@ use sqlx::{Row, SqlitePool, Transaction};
 
 use crate::error::AppResult;
 
-pub const LATEST_VERSION: i64 = 23;
+pub const LATEST_VERSION: i64 = 24;
 
 enum Step {
     /// 一段可包含多条语句的 DDL/DML。
@@ -87,7 +87,8 @@ const MIGRATIONS: &[Migration] = &[
             Step::AddColumn {
                 table: "messages",
                 column: "discussion_stance",
-                definition: "TEXT CHECK (discussion_stance IN ('propose', 'support', 'oppose', 'question'))",
+                definition:
+                    "TEXT CHECK (discussion_stance IN ('propose', 'support', 'oppose', 'question'))",
             },
             Step::AddColumn {
                 table: "messages",
@@ -132,7 +133,8 @@ const MIGRATIONS: &[Migration] = &[
             Step::AddColumn {
                 table: "messages",
                 column: "collaboration_role",
-                definition: "TEXT CHECK (collaboration_role IN ('assignment', 'summary', 'system'))",
+                definition:
+                    "TEXT CHECK (collaboration_role IN ('assignment', 'summary', 'system'))",
             },
             Step::Sql(V7_MESSAGE_INDEX),
         ],
@@ -174,7 +176,8 @@ const MIGRATIONS: &[Migration] = &[
         steps: &[Step::AddColumn {
             table: "rooms",
             column: "permission_mode",
-            definition: "TEXT NOT NULL DEFAULT 'full' CHECK (permission_mode IN ('plan','auto','full'))",
+            definition:
+                "TEXT NOT NULL DEFAULT 'full' CHECK (permission_mode IN ('plan','auto','full'))",
         }],
     },
     Migration {
@@ -331,7 +334,29 @@ const MIGRATIONS: &[Migration] = &[
             },
         ],
     },
+    Migration {
+        version: 24,
+        steps: &[Step::Sql(V24_API_PROVIDERS)],
+    },
 ];
+
+/// v24：模型供应商注册表（一期：供应商 CRUD + ACP env 注入桥接）。
+///
+/// `api_key` 本地明文存储，与 `custom_harnesses.env_json` 同一先例；
+/// `models_json` 数组元素含高级属性（contextWindow/reasoningLevels/inputTypes）。
+const V24_API_PROVIDERS: &str = r#"
+CREATE TABLE IF NOT EXISTS api_providers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  protocol TEXT NOT NULL CHECK (protocol IN ('anthropic', 'openai')),
+  base_url TEXT NOT NULL,
+  api_key TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  models_json TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+"#;
 
 /// v21：会话复用改为默认开启，并按会话状态初始化上下文水位。
 ///

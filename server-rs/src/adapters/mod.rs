@@ -20,23 +20,28 @@ use std::time::Duration;
 
 use crate::domain::agent::{Agent, HarnessKind};
 use crate::error::{AppError, AppResult};
-use crate::store::CustomHarnessStore;
+use crate::store::{ApiProviderStore, CustomHarnessStore};
 
+pub use crate::domain::run_event::RunInput;
 pub use acp::AcpAdapter;
 pub use codex::CodexAdapter;
 pub use fake::{FakeHarnessAdapter, FakeScript};
 pub use types::{EventStream, HarnessAdapter};
 pub use zcode::ZcodeAdapter;
-pub use crate::domain::run_event::RunInput;
 
 /// 适配器工厂；测试通过它注入脚本化 fake 适配器。
 pub type AdapterFactory = Arc<dyn Fn(&Agent) -> AppResult<Arc<dyn HarnessAdapter>> + Send + Sync>;
 
-/// 默认工厂：`acp` 按注册表定义构造 `AcpAdapter`，其余按内置枚举创建。
-pub fn default_adapter_factory(custom_harnesses: CustomHarnessStore) -> AdapterFactory {
+/// 默认工厂：`acp` 按注册表定义构造 `AcpAdapter`（携带供应商 store 以便
+/// spawn 注入 env），其余按内置枚举创建。
+pub fn default_adapter_factory(
+    custom_harnesses: CustomHarnessStore,
+    api_providers: ApiProviderStore,
+) -> AdapterFactory {
     Arc::new(move |agent: &Agent| match agent.harness {
         HarnessKind::Acp => Ok(Arc::new(AcpAdapter::new(
             custom_harnesses.clone(),
+            api_providers.clone(),
             agent.custom_harness_id,
         )) as Arc<dyn HarnessAdapter>),
         _ => create_adapter(agent.harness),
@@ -93,8 +98,7 @@ pub fn parse_run_timeout(raw: Option<&str>) -> AppResult<Option<Duration>> {
 /// 缺失时派生初始默认值（见 `domain::settings::initial_run_timeout_secs`）。
 pub fn run_timeout_from_env() -> Option<Duration> {
     let raw = std::env::var("MOON_RUN_TIMEOUT_SECS").ok();
-    parse_run_timeout(raw.as_deref())
-        .unwrap_or(Some(Duration::from_secs(DEFAULT_RUN_TIMEOUT_SECS)))
+    parse_run_timeout(raw.as_deref()).unwrap_or(Some(Duration::from_secs(DEFAULT_RUN_TIMEOUT_SECS)))
 }
 
 /// 用总时长上限包裹一次协议运行；超时返回可读错误，由调用方清理进程。
