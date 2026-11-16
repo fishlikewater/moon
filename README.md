@@ -32,7 +32,7 @@ Download the latest `Moon_*_x64-setup.exe` from [Releases](https://github.com/fi
 
 Moon does not include model access. Install and sign in to at least one supported CLI (`zcode`, `codex`), or register an ACP-compatible CLI in the app.
 
-Application data is stored in `%LOCALAPPDATA%\com.moon.workbench` on Windows.
+Application data is stored in `~/.moon` in your home directory. When you upgrade from an older release, the first launch automatically migrates `moon.db` and session storage from the previous location (`%LOCALAPPDATA%\com.moon.workbench`); if the migration cannot complete, Moon blocks startup with manual migration instructions instead of silently starting empty.
 
 Moon checks GitHub Releases for updates after launch and shows a non-blocking notice; open **Settings → Software update** to check manually, download, and restart into the new version. Update packages are signed with a Minisign key — if that private key is lost, existing installs must be reinstalled manually.
 

@@ -1,6 +1,6 @@
 //! Moon 桌面端入口：同进程启动 axum 后端，再创建 Tauri 窗口。
 //!
-//! 不启动 Node sidecar；数据库与会话存储位于用户本地数据目录。
+//! 不启动 Node sidecar；数据库与会话存储位于用户主目录 `~/.moon`。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -75,10 +75,14 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            let data_dir = app.path().app_local_data_dir()?;
+            // 数据根在用户主目录 ~/.moon；升级首启把旧 AppData 目录整体
+            // 搬移过去，失败直接阻断启动（迁移错误含手动搬迁指引）。
+            let legacy_dir = app.path().app_local_data_dir()?;
+            let data_dir = moon_server::config::home_data_dir();
             std::fs::create_dir_all(&data_dir)?;
+            moon_server::migration::migrate_legacy_desktop_data(&legacy_dir, &data_dir)?;
             let db_path = data_dir.join("moon.db");
-            let storage_root = data_dir.join("sessions");
+            let storage_root = data_dir.join("harness-sessions");
 
             let db = tauri::async_runtime::block_on(Db::open(&db_path))?;
             let state = tauri::async_runtime::block_on(AppState::new_with_options(

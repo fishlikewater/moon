@@ -58,6 +58,15 @@ fn default_data_dir() -> PathBuf {
         .join("data")
 }
 
+/// 桌面端数据根目录：用户主目录下的 `.moon`。
+///
+/// 与独立运行态的开发默认目录（cwd 下 `data/`）天然隔离；解析复用
+/// `adapters::codex_config::home_dir`（USERPROFILE → HOME 回退），不读
+/// ZCODE 系列环境变量。
+pub fn home_data_dir() -> PathBuf {
+    crate::adapters::codex_config::home_dir().join(".moon")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

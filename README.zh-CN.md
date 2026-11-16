@@ -32,7 +32,7 @@ Moon 以 **Tauri 2 桌面应用 + 同进程 Rust 后端**运行，所有数据�
 
 Moon 不内置模型额度。请先安装并登录至少一个受支持的 CLI（`zcode`、`codex`），或在应用内登记兼容 ACP 的 CLI。
 
-Windows 上的应用数据保存在 `%LOCALAPPDATA%\com.moon.workbench`。
+应用数据保存在用户主目录的 `~/.moon`。从旧版本升级时，首次启动会自动把 `moon.db` 与会话存储从旧位置（`%LOCALAPPDATA%\com.moon.workbench`）迁移过来；若迁移无法完成，Moon 会阻断启动并给出手动迁移指引，绝不以空数据静默启动。
 
 Moon 启动后会从 GitHub Releases 静默检查更新，并以非阻断提示告知；可在「设置 → 软件更新」手动检查、下载并重启到新版本。更新包使用 Minisign 签名；签名私钥丢失后，已安装的旧版本只能重新安装。
 

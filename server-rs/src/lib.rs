@@ -8,6 +8,7 @@ pub mod config;
 pub mod db;
 pub mod domain;
 pub mod error;
+pub mod migration;
 pub mod queue;
 pub mod routes;
 pub mod services;
