@@ -10,7 +10,8 @@
 //
 // 协议：newline-delimited JSON-RPC over stdio（与 ACP stdio 传输一致）。
 
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 function argValue(name) {
@@ -267,6 +268,35 @@ async function runPrompt(message) {
 
   if (echoEnvKey) {
     chunks(`ENV[${echoEnvKey}]=${process.env[echoEnvKey] ?? ""}`);
+    respond("end_turn");
+    return;
+  }
+
+  if (mode === "empty-fail") {
+    // 空回复诊断测试：按 KIMI_CODE_HOME 写会话索引与失败日志，然后只返回
+    // end_turn（无文本），模拟 Kimi 把上游错误吞进自己日志的行为。
+    const kimiHome = process.env.KIMI_CODE_HOME;
+    if (kimiHome) {
+      const sessionDir = join(kimiHome, "sessions", "wd_test", "session_test");
+      mkdirSync(join(sessionDir, "logs"), { recursive: true });
+      writeFileSync(
+        join(kimiHome, "session_index.jsonl"),
+        `${JSON.stringify({ sessionId, sessionDir })}\n`,
+        { encoding: "utf8" },
+      );
+      writeFileSync(
+        join(sessionDir, "logs", "kimi-code.log"),
+        '2026-11-17T04:41:50.234Z WARN  llm request failed  errorName=APIStatusError errorMessage="upstream boom" statusCode=400\n',
+        { encoding: "utf8" },
+      );
+    }
+    respond("end_turn");
+    return;
+  }
+
+  if (mode === "empty-stderr") {
+    // 非 Kimi 空回复兜底：只写 stderr，不产生文本。
+    process.stderr.write("fake stderr detail\n");
     respond("end_turn");
     return;
   }

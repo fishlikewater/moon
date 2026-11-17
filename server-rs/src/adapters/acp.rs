@@ -65,6 +65,8 @@ use crate::domain::run_event::{RunEvent, RunInput};
 use crate::error::{AppError, AppResult};
 use crate::store::{ApiProviderStore, CustomHarnessStore};
 
+use super::acp_provider::{detect_bridge_kind, BridgeKind, ProviderBridgePlan};
+
 use super::types::EventStream;
 
 /// 每次运行独立 spawn 的 ACP 适配器；定义在运行时从注册表读取。
@@ -230,8 +232,55 @@ async fn run_with_harness(
                 Err(AppError::new(error.code, message))
             }
         }
-        ok => ok,
+        Ok(outcome) => {
+            if !outcome.produced_text {
+                // Kimi 把 provider 错误写进自己的会话日志，但 ACP 只返回
+                // end_turn；空回复时读取该会话的失败 turn 透传到运行错误。
+                if let Some(home) = kimi_home(harness, &bridge) {
+                    if let Some(detail) = super::acp_diagnostics::kimi_last_upstream_error(
+                        &home,
+                        &outcome.session_id,
+                    ) {
+                        return Err(AppError::harness_run_failed(format!(
+                            "ACP agent「{}」未返回回复内容；上游错误：{detail}",
+                            harness.name
+                        )));
+                    }
+                }
+                // 其他 ACP agent 至少把已捕获的 stderr 尾部带给用户。
+                let tail = super::tail(&stderr_text);
+                let tail = tail.trim();
+                if !tail.is_empty() {
+                    return Err(AppError::harness_run_failed(format!(
+                        "ACP agent「{}」未返回回复内容：{tail}",
+                        harness.name
+                    )));
+                }
+            }
+            Ok(())
+        }
     }
+}
+
+/// Kimi 的配置根：桥接计划优先，其次 harness env / 进程 env / 默认目录。
+fn kimi_home(harness: &CustomHarness, bridge: &Option<ProviderBridgePlan>) -> Option<PathBuf> {
+    if let Some(plan) = bridge {
+        if plan.kind == BridgeKind::Kimi {
+            if let Some((_, home)) = plan.env.iter().find(|(key, _)| key == "KIMI_CODE_HOME") {
+                return Some(PathBuf::from(home));
+            }
+        }
+    }
+    if detect_bridge_kind(&harness.command, &harness.args) != Some(BridgeKind::Kimi) {
+        return None;
+    }
+    if let Some(home) = harness.env.get("KIMI_CODE_HOME") {
+        return Some(PathBuf::from(home));
+    }
+    if let Ok(home) = std::env::var("KIMI_CODE_HOME") {
+        return Some(PathBuf::from(home));
+    }
+    Some(super::codex_config::home_dir().join(".kimi-code"))
 }
 
 /// 解析智能体绑定的模型供应商。
@@ -375,6 +424,12 @@ pub async fn probe_capabilities(
     }
 }
 
+/// 一次 prompt 的结果：会话 id 供诊断定位，是否产生文本供空回复判定。
+struct RunOutcome {
+    session_id: String,
+    produced_text: bool,
+}
+
 /// 通过 SDK 运行一次完整会话：注册通知与反向请求处理器，随后在
 /// `connect_with` 的主流程里完成握手、偏好设置与 prompt。
 async fn run_protocol(
@@ -384,7 +439,7 @@ async fn run_protocol(
     stdout: ChildStdout,
     sender: &mpsc::Sender<AppResult<RunEvent>>,
     model_override: Option<&str>,
-) -> AppResult<()> {
+) -> AppResult<RunOutcome> {
     // prompt 期间的文本增量在通知处理器里累积，prompt 响应返回后拼装 Final。
     let final_text = Arc::new(Mutex::new(String::new()));
 
@@ -487,7 +542,7 @@ async fn run_session(
     sender: &mpsc::Sender<AppResult<RunEvent>>,
     final_text: &Arc<Mutex<String>>,
     model_override: Option<&str>,
-) -> Result<(), SdkError> {
+) -> Result<RunOutcome, SdkError> {
     // 1. initialize：宣告客户端能力；fs 反向读写按需开启。
     let init_response = connection
         .send_request(initialize_request())
@@ -538,13 +593,14 @@ async fn run_session(
 
     let stop_reason = stop_reason_text(prompt_response.stop_reason);
     let streamed = lock_final(final_text).clone();
-    if stop_reason != "end_turn" && streamed.is_empty() {
+    let produced_text = !streamed.is_empty();
+    if stop_reason != "end_turn" && !produced_text {
         return Err(SdkError::new(
             ErrorCode::INTERNAL_ERROR,
             format!("ACP agent 提前停止（{stop_reason}），未产生回复"),
         ));
     }
-    if !streamed.is_empty() {
+    if produced_text {
         let text = if stop_reason == "end_turn" {
             streamed
         } else {
@@ -556,7 +612,10 @@ async fn run_session(
     }
 
     // 运行成功即视为 agent 正常退出；child 的进程树终止由调用方收尾完成。
-    Ok(())
+    Ok(RunOutcome {
+        session_id,
+        produced_text,
+    })
 }
 
 /// 构造 initialize 请求：宣告客户端能力，fs 反向读写按需开启。

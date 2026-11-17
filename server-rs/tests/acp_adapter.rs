@@ -41,6 +41,13 @@ struct TestHarness {
 }
 
 async fn setup_fake_harness(extra_args: Vec<String>) -> TestHarness {
+    setup_fake_harness_env(extra_args, BTreeMap::new()).await
+}
+
+async fn setup_fake_harness_env(
+    extra_args: Vec<String>,
+    env: BTreeMap<String, String>,
+) -> TestHarness {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path().join("moon.db")).await.unwrap();
     let state =
@@ -59,7 +66,7 @@ async fn setup_fake_harness(extra_args: Vec<String>) -> TestHarness {
             name: "fake-acp".to_string(),
             command: "node".to_string(),
             args,
-            env: BTreeMap::new(),
+            env,
         })
         .await
         .unwrap();
@@ -1678,5 +1685,94 @@ async fn acp_provider_openai_injection_via_default_factory() {
     assert!(
         text.contains("ENV[OPENAI_BASE_URL]=https://openai.example/v1"),
         "openai 协议应注入 OPENAI_BASE_URL：{text}"
+    );
+}
+
+#[tokio::test]
+async fn acp_empty_reply_includes_stderr_tail() {
+    require_node();
+    let harness = setup_fake_harness(vec![
+        "--mode".to_string(),
+        "empty-stderr".to_string(),
+    ])
+    .await;
+    let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+        Some(harness.custom_harness_id),
+    ));
+
+    let mut stream = adapter.run(run_input(&harness, "你好", None));
+    let mut error = None;
+    while let Some(item) = stream.next().await {
+        if let Err(failure) = item {
+            error = Some(failure);
+            break;
+        }
+    }
+
+    let error = error.expect("空回复应产生运行错误");
+    assert!(
+        error.message.contains("fake stderr detail"),
+        "应附带 stderr 尾部：{}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn acp_empty_reply_surfaces_kimi_upstream_error() {
+    require_node();
+    let kimi_home = tempfile::tempdir().unwrap();
+    let mut env = BTreeMap::new();
+    env.insert(
+        "KIMI_CODE_HOME".to_string(),
+        kimi_home.path().to_string_lossy().to_string(),
+    );
+    // `--profile kimi-code` 仅用于按命令参数识别 Kimi bridge kind。
+    let harness = setup_fake_harness_env(
+        vec![
+            "--mode".to_string(),
+            "empty-fail".to_string(),
+            "--profile".to_string(),
+            "kimi-code".to_string(),
+        ],
+        env,
+    )
+    .await;
+    let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+        Some(harness.custom_harness_id),
+    ));
+
+    let mut stream = adapter.run(run_input(&harness, "你好", None));
+    let mut events = Vec::new();
+    let mut error = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(event) => events.push(event),
+            Err(failure) => {
+                error = Some(failure);
+                break;
+            }
+        }
+    }
+
+    let error = error.expect("空回复应产生运行错误");
+    assert!(
+        error.message.contains("upstream boom"),
+        "应透传上游错误原文：{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("HTTP 400"),
+        "应透传上游 HTTP 状态：{}",
+        error.message
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, RunEvent::Final(_))),
+        "空回复不应产生 Final 事件"
     );
 }
