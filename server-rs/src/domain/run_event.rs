@@ -55,6 +55,11 @@ pub struct RunInput {
     pub config: Option<ModelConfig>,
     /// 会话上下文；None 表示本次运行独立，不保留会话。
     pub session: Option<RunSessionContext>,
+    /// 系统级身份与人设；支持原生 system prompt 的适配器优先使用。
+    pub system_prompt: Option<String>,
+    /// 当前 harness 会话是否已经持有该 system prompt；不支持原生通道的
+    /// 适配器只在此值为 false 时把它并入 prompt，避免复用会话重复。
+    pub system_prompt_delivered: bool,
     /// 房间级权限模式；None 时沿用适配器原有默认。
     pub permission_mode: Option<RoomPermissionMode>,
     /// 本次运行的总时长上限；None 表示不限制。

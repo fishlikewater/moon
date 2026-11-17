@@ -33,6 +33,9 @@ pub(crate) struct AppServerLaunch {
     pub additional_directories: Vec<String>,
     pub permission_mode: Option<RoomPermissionMode>,
     pub prompt: String,
+    /// 系统级身份与人设；app-server 没有原生字段，按 delivered 决定是否前置。
+    pub system_prompt: Option<String>,
+    pub system_prompt_delivered: bool,
     pub resume_session_id: Option<String>,
     /// 智能体选择的模型；app-server 流程必须经 `session/setModel` 应用，
     /// 个人配置文件覆盖对新版 CLI 无效。
@@ -150,6 +153,17 @@ async fn run_session(
     sender: &mpsc::Sender<AppResult<RunEvent>>,
 ) -> AppResult<()> {
     let mut request_id = 0_i64;
+    let create_prompt = super::merge_system_prompt(
+        &launch.prompt,
+        launch.system_prompt.as_deref(),
+        false,
+    );
+    let resume_prompt = super::merge_system_prompt(
+        &launch.prompt,
+        launch.system_prompt.as_deref(),
+        launch.system_prompt_delivered,
+    );
+    let mut prompt = create_prompt.clone();
     let session_id = match launch.resume_session_id.as_deref() {
         Some(existing) => {
             request_id += 1;
@@ -162,11 +176,15 @@ async fn run_session(
             )
             .await
             {
-                Ok(value) => session_id_from(&value).unwrap_or_else(|| existing.to_string()),
+                Ok(value) => {
+                    prompt = resume_prompt;
+                    session_id_from(&value).unwrap_or_else(|| existing.to_string())
+                }
                 Err(error)
                     if error.code == -32004 || error.message.contains("Session not found") =>
                 {
                     request_id += 1;
+                    prompt = create_prompt.clone();
                     create_session(launch, stdin, lines, request_id).await?
                 }
                 Err(error) => {
@@ -228,7 +246,7 @@ async fn run_session(
         lines,
         request_id,
         "session/send",
-        json!({ "sessionId": session_id, "content": launch.prompt }),
+        json!({ "sessionId": session_id, "content": prompt }),
     )
     .await
     .map_err(|error| error.into_app_error("发送 zcode 消息失败"))?;

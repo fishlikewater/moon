@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use moon_server::adapters::codex::{
-    build_model_args, codex_permission_args, parse_codex_line, plan_codex_home,
-    resolve_codex_command,
+    build_model_args, build_system_prompt_args, codex_permission_args, parse_codex_line,
+    plan_codex_home, resolve_codex_command,
 };
 use moon_server::adapters::zcode::{
     parse_zcode_line_detail, plan_prompt_invocation, plan_session_env, split_prompt_for_attachments,
@@ -246,6 +246,24 @@ fn maps_codex_permission_and_model_args() {
 }
 
 #[test]
+fn builds_codex_developer_instructions_argument() {
+    assert!(build_system_prompt_args(None).unwrap().is_empty());
+    assert!(build_system_prompt_args(Some("   ")).unwrap().is_empty());
+
+    let system_prompt = "你是「管家」。\n人设：谨慎，包含 \"引号\" 与 \\ 反斜杠。";
+    let args = build_system_prompt_args(Some(system_prompt)).unwrap();
+    assert_eq!(args.len(), 2);
+    assert_eq!(args[0], "-c");
+    let prefix = "developer_instructions=";
+    let encoded = args[1]
+        .strip_prefix(prefix)
+        .expect("参数应使用 developer_instructions 覆盖值");
+    // 编码必须是 TOML 可接受的 JSON 字符串，解码后逐字还原（含换行与引号）。
+    let decoded: String = serde_json::from_str(encoded).unwrap();
+    assert_eq!(decoded, system_prompt);
+}
+
+#[test]
 fn codex_home_filters_desktop_only_config() {
     let _guard = ENV_LOCK.lock().unwrap();
     let fixture = tempfile::tempdir().unwrap();
@@ -311,9 +329,12 @@ console.log(JSON.stringify({ type: 'result', payload: { response: '你好' } }))
             harness_session_id: Some("old-session".to_string()),
             storage_dir: storage.to_string_lossy().into_owned(),
             last_context_message_id: 0,
+            system_prompt_hash: None,
         }),
         permission_mode: Some(RoomPermissionMode::Plan),
         timeout: None,
+        system_prompt: None,
+        system_prompt_delivered: false,
     };
 
     let adapter = ZcodeAdapter;
@@ -362,6 +383,8 @@ async fn zcode_failure_translation_uses_session_reset_hint() {
         session: None,
         permission_mode: None,
         timeout: None,
+        system_prompt: None,
+        system_prompt_delivered: false,
     });
 
     let mut saw_error_event = false;
@@ -427,9 +450,12 @@ process.stdin.on('end', () => {
             harness_session_id: Some("thread-old".to_string()),
             storage_dir: storage.to_string_lossy().into_owned(),
             last_context_message_id: 0,
+            system_prompt_hash: None,
         }),
         permission_mode: Some(RoomPermissionMode::Auto),
         timeout: None,
+        system_prompt: None,
+        system_prompt_delivered: false,
     };
 
     let adapter = CodexAdapter;
@@ -481,6 +507,7 @@ fn isolated_session_keeps_persistent_storage() {
         harness_session_id: None,
         storage_dir: storage.to_string_lossy().into_owned(),
         last_context_message_id: 0,
+        system_prompt_hash: None,
     }))
     .unwrap();
     assert_eq!(
@@ -577,6 +604,8 @@ process.stdin.on('data', (chunk) => {
         session: None,
         permission_mode: Some(RoomPermissionMode::Plan),
         timeout: None,
+        system_prompt: None,
+        system_prompt_delivered: false,
     };
 
     let adapter = ZcodeAdapter;
@@ -682,6 +711,8 @@ process.stdin.on('data', (chunk) => {
         session: None,
         permission_mode: Some(RoomPermissionMode::Plan),
         timeout: None,
+        system_prompt: None,
+        system_prompt_delivered: false,
     };
 
     let adapter = ZcodeAdapter;
@@ -780,6 +811,8 @@ setInterval(() => {}, 1000);
         session: None,
         permission_mode: None,
         timeout: None,
+        system_prompt: None,
+        system_prompt_delivered: false,
     };
 
     let started = Instant::now();
@@ -843,6 +876,8 @@ async fn codex_times_out_hanging_cli() {
         session: None,
         permission_mode: None,
         timeout: Some(Duration::from_millis(500)),
+        system_prompt: None,
+        system_prompt_delivered: false,
     };
 
     let (failure, elapsed) = collect_failure(&CodexAdapter, input).await;
@@ -872,6 +907,8 @@ async fn zcode_cli_times_out_hanging_cli() {
         session: None,
         permission_mode: None,
         timeout: Some(Duration::from_millis(500)),
+        system_prompt: None,
+        system_prompt_delivered: false,
     };
 
     let (failure, elapsed) = collect_failure(&ZcodeAdapter, input).await;
@@ -901,6 +938,8 @@ async fn zcode_app_server_times_out_hanging_cli() {
         session: None,
         permission_mode: None,
         timeout: Some(Duration::from_millis(500)),
+        system_prompt: None,
+        system_prompt_delivered: false,
     };
 
     let (failure, elapsed) = collect_failure(&ZcodeAdapter, input).await;

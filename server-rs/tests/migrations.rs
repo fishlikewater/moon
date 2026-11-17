@@ -384,6 +384,54 @@ async fn v21_backfills_reuse_and_context_watermarks_by_session_state() {
     db.close().await;
 }
 
+/// v26：agent_sessions.system_prompt_hash 只追加可空列，旧会话保持未投递。
+#[tokio::test]
+async fn v26_adds_system_prompt_hash_to_agent_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v25-sessions.db");
+    let db = Db::open(&path).await.unwrap();
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO agents (id, name, persona, harness, created_at)
+        VALUES (1, '旧成员', '人设', 'fake', 1);
+
+        INSERT INTO rooms (id, name, workspace_dir, created_at)
+        VALUES (1, '迁移房', 'E:/tmp/migrate', 1);
+
+        INSERT INTO agent_sessions
+          (room_id, agent_id, harness, harness_session_id, status, storage_dir,
+           last_context_message_id, created_at)
+        VALUES (1, 1, 'fake', 'sess-old', 'active', 'room-1/agent-1/s-old', 2, 1);
+
+        PRAGMA user_version = 25;
+        "#,
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.close().await;
+
+    let db = Db::open(&path).await.unwrap();
+    assert_eq!(db.user_version().await.unwrap(), LATEST_VERSION);
+    let columns: Vec<String> = sqlx::query("PRAGMA table_info(agent_sessions)")
+        .fetch_all(db.pool())
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert!(columns.contains(&"system_prompt_hash".to_string()));
+
+    let hash: Option<String> = sqlx::query_scalar(
+        "SELECT system_prompt_hash FROM agent_sessions WHERE harness_session_id = 'sess-old'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(hash, None, "旧会话尚未投递 system prompt");
+    db.close().await;
+}
+
 /// v25：room_type 列对旧数据以默认值 group 回填（AC-001 兼容性）。
 #[tokio::test]
 async fn v25_adds_room_type_with_group_default_for_legacy_rows() {

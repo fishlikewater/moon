@@ -120,9 +120,41 @@ where
     }
 }
 
+/// fallback：没有原生 system prompt 通道的适配器，只在会话尚未持有 system prompt
+/// 时把它前置到本轮 prompt；已投递的复用会话保持原样，避免重复占用上下文。
+pub(crate) fn merge_system_prompt(
+    prompt: &str,
+    system_prompt: Option<&str>,
+    delivered: bool,
+) -> String {
+    match (system_prompt, delivered) {
+        (Some(system_prompt), false) if !system_prompt.trim().is_empty() => {
+            format!("{system_prompt}\n\n{prompt}")
+        }
+        _ => prompt.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_system_prompt_only_prepends_before_delivery() {
+        assert_eq!(
+            merge_system_prompt("当前指令", Some("系统人设"), false),
+            "系统人设\n\n当前指令"
+        );
+        assert_eq!(
+            merge_system_prompt("当前指令", Some("系统人设"), true),
+            "当前指令"
+        );
+        assert_eq!(merge_system_prompt("当前指令", None, false), "当前指令");
+        assert_eq!(
+            merge_system_prompt("当前指令", Some("   "), false),
+            "当前指令"
+        );
+    }
 
     #[test]
     fn parse_run_timeout_defaults_and_bounds() {

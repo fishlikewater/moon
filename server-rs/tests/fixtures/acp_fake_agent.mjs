@@ -26,6 +26,9 @@ const failLoad = process.argv.includes("--fail-load");
 const replayLoad = process.argv.includes("--replay-load");
 const legacyModels = process.argv.includes("--legacy-models");
 const hangHandshake = process.argv.includes("--hang-handshake");
+// --system-prompt：宣告 sessionCapabilities.systemPrompt，模拟支持原生
+// systemPrompt 的 agent；未加该参数时只能由 client 把系统提示并入 prompt。
+const advertiseSystemPrompt = process.argv.includes("--system-prompt");
 // --echo-env KEY：每轮回复首行回显 `ENV[KEY]=<当前进程环境值>`，
 // 供 Moon 验证 spawn env 注入（供应商 BASE_URL/API_KEY）。
 const echoEnvKey = argValue("--echo-env");
@@ -160,7 +163,12 @@ function handleMessage(message) {
         id: message.id,
         result: {
           protocolVersion: 1,
-          agentCapabilities: { loadSession },
+          agentCapabilities: {
+            loadSession,
+            ...(advertiseSystemPrompt
+              ? { sessionCapabilities: { systemPrompt: {} } }
+              : {}),
+          },
         },
       });
       return;

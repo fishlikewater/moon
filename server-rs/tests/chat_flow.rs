@@ -331,6 +331,106 @@ async fn reuse_session_and_permission_mode_are_passed_to_adapter() {
 }
 
 #[tokio::test]
+async fn persona_is_delivered_once_through_system_prompt() {
+    let (factory, inputs) = flow_factory(vec![
+        RunEvent::Session("sess-persona".to_string()),
+        RunEvent::TextDelta("ok".to_string()),
+        RunEvent::Final("ok".to_string()),
+    ]);
+    let app = setup_with_adapter(Some(factory)).await;
+    let agent = create_agent(&app, "管家").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "书房", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+    enable_reuse(&app, room_id, agent_id).await;
+
+    post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages"),
+        json!({ "content": "@管家 第一问" }),
+    )
+    .await;
+    wait_for_runs(&app, room_id, 1).await;
+    post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages"),
+        json!({ "content": "@管家 第二问" }),
+    )
+    .await;
+    wait_for_runs(&app, room_id, 2).await;
+
+    let captured = inputs.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    let expected_system_prompt = "你是房间「书房」中的智能体「管家」。\n人设：管家 的人设";
+    assert_eq!(
+        captured[0].system_prompt.as_deref(),
+        Some(expected_system_prompt)
+    );
+    assert_eq!(
+        captured[1].system_prompt.as_deref(),
+        Some(expected_system_prompt)
+    );
+    // 身份与人设不再进入 user prompt。
+    assert!(!captured[0].prompt.contains("人设："));
+    assert!(!captured[0].prompt.contains("你是房间「书房」中的智能体"));
+    assert!(captured[0].prompt.contains("第一问"));
+
+    // 首轮新会话尚未投递；成功运行记录 hash 后，第二轮同人设视为已投递。
+    assert!(!captured[0].system_prompt_delivered);
+    assert!(captured[1].system_prompt_delivered);
+}
+
+#[tokio::test]
+async fn moderator_chat_uses_separate_system_prompt() {
+    let (factory, inputs) = flow_factory(text_events("主持人回复"));
+    let app = setup_with_adapter(Some(factory)).await;
+    let room = create_room(&app, "主持人房间", &[]).await;
+    let room_id = room["id"].as_i64().unwrap();
+    let builtin_id = builtin_moderator_id(&app).await;
+    let agents = get(&app, "/api/agents").await;
+    let moderator = agents
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["id"].as_i64() == Some(builtin_id))
+        .expect("builtin moderator")
+        .clone();
+
+    let patched = patch(
+        &app,
+        &format!("/api/rooms/{room_id}"),
+        json!({ "replyMode": "moderator" }),
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK);
+
+    post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages"),
+        json!({ "content": "请接管这条消息" }),
+    )
+    .await;
+    wait_for_runs(&app, room_id, 1).await;
+
+    let captured = inputs.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let system_prompt = captured[0]
+        .system_prompt
+        .as_deref()
+        .expect("主持人聊天应有独立 system prompt");
+    let moderator_name = moderator["name"].as_str().unwrap();
+    let moderator_persona = moderator["persona"].as_str().unwrap();
+    assert!(system_prompt.contains(&format!(
+        "你是房间「主持人房间」中的智能体「{moderator_name}」。"
+    )));
+    assert!(system_prompt.contains(&format!("人设：{moderator_persona}")));
+    // 主持人协议提示词仍保留，但不再夹带主持人自己的人设。
+    assert!(captured[0].prompt.contains("固定内置主持人"));
+    assert!(!captured[0].prompt.contains(&format!("人设：{moderator_persona}")));
+}
+
+#[tokio::test]
 async fn empty_stream_is_reported_as_failure() {
     let (factory, _inputs) = flow_factory(Vec::new());
     let app = setup_with_adapter(Some(factory)).await;

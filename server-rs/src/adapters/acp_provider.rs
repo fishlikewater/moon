@@ -582,6 +582,7 @@ mod tests {
             harness_session_id: None,
             storage_dir: storage.to_string_lossy().to_string(),
             last_context_message_id: 0,
+            system_prompt_hash: None,
         };
         let h = harness("Kimi", "npx.cmd", &["@moonshot-ai/kimi-code"]);
         let plan = prepare_provider_bridge(

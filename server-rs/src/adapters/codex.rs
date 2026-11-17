@@ -258,6 +258,22 @@ pub fn build_model_args(config: Option<&ModelConfig>) -> Vec<String> {
     args
 }
 
+/// Codex 的 `developer_instructions` 是会话级开发者指令；用 `-c` 只覆盖本次
+/// 运行，不写用户的 `~/.codex/config.toml`。JSON 字符串转义与 TOML basic string
+/// 兼容（引号、反斜杠、换行、制表符）。
+pub fn build_system_prompt_args(system_prompt: Option<&str>) -> AppResult<Vec<String>> {
+    let Some(system_prompt) = system_prompt.filter(|value| !value.trim().is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let encoded = serde_json::to_string(system_prompt).map_err(|error| {
+        AppError::with_source(ErrorCode::InternalError, "无法序列化 system prompt", error)
+    })?;
+    Ok(vec![
+        "-c".to_string(),
+        format!("developer_instructions={encoded}"),
+    ])
+}
+
 /// 纯函数：把一行 stdout 解析为运行事件；未知/非法输入返回 None。
 pub fn parse_codex_line(line: &str) -> Option<RunEvent> {
     let trimmed = line.trim();
@@ -488,6 +504,7 @@ async fn run_codex(
         args.push("--ephemeral".to_string());
     }
     args.extend(build_model_args(input.config.as_ref()));
+    args.extend(build_system_prompt_args(input.system_prompt.as_deref())?);
 
     let mut command = Command::new(&resolved.command);
     command

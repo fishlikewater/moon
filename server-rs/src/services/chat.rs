@@ -10,6 +10,7 @@
 //! 多个提及按在文本中出现的先后顺序依次排队运行。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -151,6 +152,7 @@ struct SessionHistoryState {
     session_id: Option<i64>,
     has_harness_session: bool,
     last_context_message_id: i64,
+    system_prompt_hash: Option<String>,
 }
 
 /// 一次运行实际使用的房间历史：最近窗口 + 更早未读摘要。
@@ -711,10 +713,20 @@ impl ChatService {
             session_id: Some(session.id),
             has_harness_session: session.context.harness_session_id.is_some(),
             last_context_message_id: session.context.last_context_message_id,
+            system_prompt_hash: session.context.system_prompt_hash.clone(),
         });
         let loaded = self
             .load_history(room_id, agent, session_state.as_ref(), options.skip_room_context)
             .await?;
+        let system_prompt = (!options.skip_room_context)
+            .then(|| build_system_prompt(&room, agent));
+        let system_prompt_hash = system_prompt.as_deref().map(hash_text);
+        let system_prompt_delivered = match (&system_prompt_hash, session_state.as_ref()) {
+            (Some(hash), Some(session)) => {
+                session.system_prompt_hash.as_deref() == Some(hash.as_str())
+            }
+            _ => false,
+        };
         let prompt = self
             .build_prompt(
                 &room,
@@ -863,6 +875,8 @@ impl ChatService {
                     additional_directories,
                     config: run_config,
                     session: run_session.as_ref().map(|session| session.context.clone()),
+                    system_prompt: system_prompt.clone(),
+                    system_prompt_delivered,
                     permission_mode: Some(room.permission_mode),
                     timeout: self.settings.run_timeout().await?,
                 };
@@ -1221,6 +1235,25 @@ impl ChatService {
                 .await?
             {
                 final_message = updated;
+            }
+        }
+        // 只有成功运行才记录 system prompt hash；失败重试时下一轮仍会重投递。
+        // 在标记运行完成前提交，避免队列已释放但投递状态尚未落库的窗口。
+        if let (Some(session_id), Some(hash), Some(service)) = (
+            loaded.session_id,
+            system_prompt_hash.as_deref(),
+            &self.session_service,
+        ) {
+            if let Err(error) = service.record_system_prompt_hash(session_id, hash).await {
+                tracing::warn!(
+                    event = "system_prompt_hash_failed",
+                    room_id,
+                    agent_id = agent.id,
+                    run_id = run.id,
+                    session_id,
+                    error = %error.message,
+                    "system prompt hash commit failed"
+                );
             }
         }
         let finished = self
@@ -2362,7 +2395,7 @@ impl ChatService {
         })
     }
 
-    /// 构建运行提示词：身份与人设 + 更早未读摘要 + 房间最近对话 + 当前指令。
+    /// 构建运行提示词：更早未读摘要 + 房间最近对话 + 当前指令。
     async fn build_prompt(
         &self,
         room: &Room,
@@ -2425,11 +2458,7 @@ impl ChatService {
             .build_history_transcript(room, history, &compaction)
             .await?;
 
-        let mut lines = vec![
-            format!("你是房间「{}」中的智能体「{}」。", room.name, agent.name),
-            format!("人设：{}", agent.persona),
-            String::new(),
-        ];
+        let mut lines = Vec::new();
         if let Some(preamble) = &preamble {
             lines.push(preamble.clone());
             lines.push(String::new());
@@ -2554,11 +2583,13 @@ impl ChatService {
                     session_id: None,
                     has_harness_session: session.harness_session_id.is_some(),
                     last_context_message_id: session.last_context_message_id,
+                    system_prompt_hash: session.system_prompt_hash,
                 },
                 None => SessionHistoryState {
                     session_id: None,
                     has_harness_session: false,
                     last_context_message_id: 0,
+                    system_prompt_hash: None,
                 },
             })
         } else {
@@ -2848,6 +2879,22 @@ impl<'a> StreamingWriter<'a> {
         self.persisted = self.buffered.clone();
         self.last_persist = Instant::now();
     }
+}
+
+/// 系统级身份与人设；普通聊天和主持人聊天通过适配器的原生 system prompt
+/// 通道传递，不再每轮拼进 user prompt。
+fn build_system_prompt(room: &Room, agent: &Agent) -> String {
+    format!(
+        "你是房间「{}」中的智能体「{}」。\n人设：{}",
+        room.name, agent.name, agent.persona
+    )
+}
+
+/// 会话投递判断使用的稳定短 hash；只比较相等性，不做密码学用途。
+fn hash_text(value: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// 运行活动快照类型在 chat 内部通过 registry 产出；此别名避免调用方误用。

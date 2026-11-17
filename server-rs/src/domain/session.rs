@@ -42,6 +42,8 @@ pub struct StoredAgentSession {
     pub last_run_id: Option<i64>,
     /// 该会话已投递到的全局消息 id；新会话为 0。
     pub last_context_message_id: i64,
+    /// 已成功投递的 system prompt hash；新会话为 None。
+    pub system_prompt_hash: Option<String>,
 }
 
 impl StoredAgentSession {
@@ -104,6 +106,8 @@ pub struct RunSessionContext {
     pub storage_dir: String,
     /// 该会话已投递到的全局消息 id；首次运行为 0。
     pub last_context_message_id: i64,
+    /// 已成功投递的 system prompt hash；新会话为 None。
+    pub system_prompt_hash: Option<String>,
 }
 
 #[derive(Debug, Clone)]

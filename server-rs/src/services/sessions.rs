@@ -205,6 +205,7 @@ impl SessionService {
                 harness_session_id: current.harness_session_id,
                 storage_dir: storage_dir.to_string_lossy().into_owned(),
                 last_context_message_id: current.last_context_message_id,
+                system_prompt_hash: current.system_prompt_hash,
             },
         }))
     }
@@ -226,6 +227,13 @@ impl SessionService {
     ) -> AppResult<()> {
         self.sessions
             .advance_context_watermark(session_id, message_id)
+            .await
+    }
+
+    /// 记录成功投递的 system prompt hash；调用方只在运行成功后提交。
+    pub async fn record_system_prompt_hash(&self, session_id: i64, hash: &str) -> AppResult<()> {
+        self.sessions
+            .record_system_prompt_hash(session_id, hash)
             .await
     }
 

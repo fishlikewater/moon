@@ -29,8 +29,8 @@ use agent_client_protocol::v1::schema::{
     ReadTextFileRequest, ReadTextFileResponse, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigId,
     SessionConfigOptionValue, SessionId, SessionModeId, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, TextContent, ToolCallStatus,
-    WriteTextFileRequest, WriteTextFileResponse,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, SystemPrompt, TextContent,
+    ToolCallStatus, WriteTextFileRequest, WriteTextFileResponse,
 };
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::{
@@ -567,20 +567,41 @@ async fn run_session(
         .await
         .map_err(|error| protocol_error("ACP initialize 失败", error))?;
     let load_session = init_response.agent_capabilities.load_session;
+    // ACP 只在 agent 显式宣告 sessionCapabilities.systemPrompt 时接受标准字段；
+    // 未宣告时保持兼容：由 fallback 在首轮/人设变化时并入 prompt。
+    let supports_system_prompt = init_response
+        .agent_capabilities
+        .session_capabilities
+        .system_prompt
+        .is_some();
+    let system_prompt = input.system_prompt.as_ref().map(|text| {
+        SystemPrompt::new(vec![ContentBlock::Text(TextContent::new(text.clone()))])
+    });
+    let request_system_prompt = supports_system_prompt
+        .then_some(system_prompt.as_ref())
+        .flatten();
 
     // 2. 会话：优先续接；load 失败回退新建。响应体携带 agent 自报的能力快照。
-    let (session_id, capabilities) = match input
+    let (session_id, capabilities, resumed) = match input
         .session
         .as_ref()
         .and_then(|session| session.harness_session_id.clone())
     {
         Some(existing) if load_session => {
-            match load_session_message(&connection, &existing, input).await {
-                Ok(value) => (existing, parse_capabilities(&value)),
-                Err(_) => create_session(&connection, input).await?,
+            match load_session_message(&connection, &existing, input, request_system_prompt).await {
+                Ok(value) => (existing, parse_capabilities(&value), true),
+                Err(_) => {
+                    let (session_id, capabilities) =
+                        create_session(&connection, input, request_system_prompt).await?;
+                    (session_id, capabilities, false)
+                }
             }
         }
-        _ => create_session(&connection, input).await?,
+        _ => {
+            let (session_id, capabilities) =
+                create_session(&connection, input, request_system_prompt).await?;
+            (session_id, capabilities, false)
+        }
     };
 
     send_event(sender, RunEvent::Session(session_id.clone()))
@@ -601,11 +622,20 @@ async fn run_session(
     // 4. prompt：响应只在 turn 结束后返回；期间以通知与反向请求为主。
     //    agent 返回的错误信息保持原样透传，与既有行为一致。
     //    加载会话的回放通知已全部到达；从这里开始接收的才是本轮输出。
+    let prompt = if supports_system_prompt {
+        input.prompt.clone()
+    } else {
+        super::merge_system_prompt(
+            &input.prompt,
+            input.system_prompt.as_deref(),
+            input.system_prompt_delivered && resumed,
+        )
+    };
     accept_updates.store(true, Ordering::SeqCst);
     let prompt_response = connection
         .send_request(PromptRequest::new(
             SessionId::from(session_id.clone()),
-            vec![ContentBlock::Text(TextContent::new(input.prompt.clone()))],
+            vec![ContentBlock::Text(TextContent::new(prompt))],
         ))
         .block_task()
         .await?;
@@ -653,8 +683,9 @@ fn initialize_request() -> InitializeRequest {
 async fn create_session(
     connection: &ConnectionTo<Agent>,
     input: &RunInput,
+    system_prompt: Option<&SystemPrompt>,
 ) -> Result<(String, AcpCapabilities), SdkError> {
-    let request = NewSessionRequest::new(PathBuf::from(&input.workspace_dir))
+    let mut request = NewSessionRequest::new(PathBuf::from(&input.workspace_dir))
         .mcp_servers(Vec::new())
         .additional_directories(
             input
@@ -663,6 +694,9 @@ async fn create_session(
                 .map(PathBuf::from)
                 .collect(),
         );
+    if let Some(system_prompt) = system_prompt {
+        request = request.system_prompt(system_prompt.clone());
+    }
     let message = UntypedMessage::new("session/new", &request)
         .map_err(|error| protocol_error("创建 ACP 会话失败", error))?;
     let value = connection
@@ -683,9 +717,13 @@ async fn load_session_message(
     connection: &ConnectionTo<Agent>,
     session_id: &str,
     input: &RunInput,
+    system_prompt: Option<&SystemPrompt>,
 ) -> Result<Value, SdkError> {
-    let request =
+    let mut request =
         LoadSessionRequest::new(session_id.to_string(), PathBuf::from(&input.workspace_dir));
+    if let Some(system_prompt) = system_prompt {
+        request = request.system_prompt(system_prompt.clone());
+    }
     let message = UntypedMessage::new("session/load", &request)?;
     connection
         .send_request(message)

@@ -182,6 +182,8 @@ impl AgentBuilderService {
             session: None,
             permission_mode: None,
             timeout: self.settings.run_timeout().await?,
+            system_prompt: None,
+            system_prompt_delivered: false,
         });
 
         let started = Instant::now();

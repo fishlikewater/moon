@@ -58,6 +58,8 @@ async fn run_round(
         session,
         permission_mode: Some(RoomPermissionMode::Plan),
         timeout: None,
+        system_prompt: None,
+        system_prompt_delivered: false,
     });
     let mut text = String::new();
     let mut session_id = None;
@@ -95,6 +97,7 @@ async fn zcode_real_cli_round_trip_and_resume() {
             harness_session_id: None,
             storage_dir: storage.to_string_lossy().into_owned(),
             last_context_message_id: 0,
+            system_prompt_hash: None,
         }),
     )
     .await;
@@ -110,6 +113,7 @@ async fn zcode_real_cli_round_trip_and_resume() {
             harness_session_id: Some(session_id.clone()),
             storage_dir: storage.to_string_lossy().into_owned(),
             last_context_message_id: 0,
+            system_prompt_hash: None,
         }),
     )
     .await;
@@ -137,6 +141,7 @@ async fn codex_real_cli_round_trip_and_resume() {
             harness_session_id: None,
             storage_dir: storage.to_string_lossy().into_owned(),
             last_context_message_id: 0,
+            system_prompt_hash: None,
         }),
     )
     .await;
@@ -152,6 +157,7 @@ async fn codex_real_cli_round_trip_and_resume() {
             harness_session_id: Some(session_id.clone()),
             storage_dir: storage.to_string_lossy().into_owned(),
             last_context_message_id: 0,
+            system_prompt_hash: None,
         }),
     )
     .await;

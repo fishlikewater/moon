@@ -80,6 +80,16 @@ async fn setup_fake_harness_env(
 }
 
 fn run_input(harness: &TestHarness, prompt: &str, session: Option<RunSessionContext>) -> RunInput {
+    run_input_with_system_prompt(harness, prompt, session, None, false)
+}
+
+fn run_input_with_system_prompt(
+    harness: &TestHarness,
+    prompt: &str,
+    session: Option<RunSessionContext>,
+    system_prompt: Option<&str>,
+    system_prompt_delivered: bool,
+) -> RunInput {
     RunInput {
         prompt: prompt.to_string(),
         workspace_dir: harness.workspace.to_string_lossy().to_string(),
@@ -88,6 +98,8 @@ fn run_input(harness: &TestHarness, prompt: &str, session: Option<RunSessionCont
         session,
         permission_mode: None,
         timeout: None,
+        system_prompt: system_prompt.map(str::to_string),
+        system_prompt_delivered,
     }
 }
 
@@ -105,6 +117,39 @@ fn final_text(events: &[RunEvent]) -> Option<String> {
         RunEvent::Final(text) => Some(text.clone()),
         _ => None,
     })
+}
+
+fn recorded_requests(path: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("fake agent 记录应为合法 JSON"))
+        .collect()
+}
+
+fn request_prompt_text(request: &serde_json::Value) -> String {
+    request["params"]["prompt"]
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn request_system_prompt_text(request: &serde_json::Value) -> Option<String> {
+    request["params"]["systemPrompt"]["content"]
+        .as_array()?
+        .iter()
+        .filter(|block| block["type"] == "text")
+        .filter_map(|block| block["text"].as_str())
+        .next()
+        .map(str::to_string)
 }
 
 #[tokio::test]
@@ -342,6 +387,7 @@ async fn acp_adapter_resumes_session_when_reuse_enabled() {
                 harness_session_id: Some(first_session.clone()),
                 storage_dir: storage_dir.to_string_lossy().to_string(),
                 last_context_message_id: 0,
+                system_prompt_hash: None,
             }),
         ),
     )
@@ -387,6 +433,223 @@ async fn acp_adapter_resumes_session_when_reuse_enabled() {
 }
 
 #[tokio::test]
+async fn acp_adapter_uses_native_system_prompt_when_advertised() {
+    require_node();
+    let record_dir = tempfile::tempdir().unwrap();
+    let record_file = record_dir.path().join("requests.jsonl");
+    let harness = setup_fake_harness(vec![
+        "--mode".to_string(),
+        "record".to_string(),
+        "--system-prompt".to_string(),
+        "--record".to_string(),
+        record_file.to_string_lossy().to_string(),
+    ])
+    .await;
+    let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+        Some(harness.custom_harness_id),
+    ));
+
+    let storage_dir = harness.dir.path().join("session-storage");
+    std::fs::create_dir_all(&storage_dir).unwrap();
+    let system_prompt = "你是房间「书房」中的智能体「管家」。\n人设：谨慎、简洁。";
+
+    let first = collect_events(
+        adapter.clone(),
+        run_input_with_system_prompt(&harness, "第一问", None, Some(system_prompt), false),
+    )
+    .await;
+    let first_session = first
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::Session(id) => Some(id.clone()),
+            _ => None,
+        })
+        .expect("第一次运行应有会话事件");
+
+    let second = collect_events(
+        adapter,
+        run_input_with_system_prompt(
+            &harness,
+            "第二问",
+            Some(RunSessionContext {
+                harness_session_id: Some(first_session),
+                storage_dir: storage_dir.to_string_lossy().to_string(),
+                last_context_message_id: 0,
+                system_prompt_hash: Some("same-hash".to_string()),
+            }),
+            Some(system_prompt),
+            true,
+        ),
+    )
+    .await;
+
+    // 原生通道生效时，user prompt 只有本轮指令，没有身份/人设。
+    assert_eq!(final_text(&first).as_deref(), Some("第 1 轮：第一问"));
+    assert_eq!(final_text(&second).as_deref(), Some("第 1 轮：第二问"));
+
+    let requests = recorded_requests(&record_file);
+    let create = requests
+        .iter()
+        .find(|request| request["method"] == "session/new")
+        .expect("首轮应发出 session/new");
+    assert_eq!(
+        request_system_prompt_text(create).as_deref(),
+        Some(system_prompt)
+    );
+    let load = requests
+        .iter()
+        .find(|request| request["method"] == "session/load")
+        .expect("复用会话应发出 session/load");
+    assert_eq!(
+        request_system_prompt_text(load).as_deref(),
+        Some(system_prompt)
+    );
+
+    let prompts: Vec<String> = requests
+        .iter()
+        .filter(|request| request["method"] == "session/prompt")
+        .map(request_prompt_text)
+        .collect();
+    assert_eq!(prompts, vec!["第一问".to_string(), "第二问".to_string()]);
+}
+
+#[tokio::test]
+async fn acp_adapter_falls_back_to_first_prompt_for_system_prompt() {
+    require_node();
+    let record_dir = tempfile::tempdir().unwrap();
+    let record_file = record_dir.path().join("requests.jsonl");
+    let harness = setup_fake_harness(vec![
+        "--mode".to_string(),
+        "record".to_string(),
+        "--record".to_string(),
+        record_file.to_string_lossy().to_string(),
+    ])
+    .await;
+    let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+        Some(harness.custom_harness_id),
+    ));
+
+    let storage_dir = harness.dir.path().join("session-storage");
+    std::fs::create_dir_all(&storage_dir).unwrap();
+    let system_prompt = "你是房间「书房」中的智能体「管家」。\n人设：谨慎、简洁。";
+
+    let first = collect_events(
+        adapter.clone(),
+        run_input_with_system_prompt(&harness, "第一问", None, Some(system_prompt), false),
+    )
+    .await;
+    let first_session = first
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::Session(id) => Some(id.clone()),
+            _ => None,
+        })
+        .expect("第一次运行应有会话事件");
+
+    let second = collect_events(
+        adapter,
+        run_input_with_system_prompt(
+            &harness,
+            "第二问",
+            Some(RunSessionContext {
+                harness_session_id: Some(first_session),
+                storage_dir: storage_dir.to_string_lossy().to_string(),
+                last_context_message_id: 0,
+                system_prompt_hash: Some("same-hash".to_string()),
+            }),
+            Some(system_prompt),
+            true,
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        final_text(&first),
+        Some(format!("第 1 轮：{system_prompt}\n\n第一问"))
+    );
+    assert_eq!(final_text(&second).as_deref(), Some("第 1 轮：第二问"));
+
+    let requests = recorded_requests(&record_file);
+    assert!(
+        requests
+            .iter()
+            .filter(|request| request["method"] == "session/new"
+                || request["method"] == "session/load")
+            .all(|request| request_system_prompt_text(request).is_none()),
+        "未宣告 systemPrompt 的 agent 不应收到原生字段：{requests:?}"
+    );
+    let prompts: Vec<String> = requests
+        .iter()
+        .filter(|request| request["method"] == "session/prompt")
+        .map(request_prompt_text)
+        .collect();
+    assert_eq!(
+        prompts,
+        vec![
+            format!("{system_prompt}\n\n第一问"),
+            "第二问".to_string()
+        ]
+    );
+}
+
+#[tokio::test]
+async fn acp_adapter_reinjects_system_prompt_when_session_recreated() {
+    require_node();
+    let record_dir = tempfile::tempdir().unwrap();
+    let record_file = record_dir.path().join("requests.jsonl");
+    let harness = setup_fake_harness(vec![
+        "--mode".to_string(),
+        "record".to_string(),
+        "--fail-load".to_string(),
+        "--record".to_string(),
+        record_file.to_string_lossy().to_string(),
+    ])
+    .await;
+    let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+        Some(harness.custom_harness_id),
+    ));
+
+    let storage_dir = harness.dir.path().join("session-storage");
+    std::fs::create_dir_all(&storage_dir).unwrap();
+    let system_prompt = "你是房间「书房」中的智能体「管家」。";
+
+    // delivered=true 说明旧会话已收到过；但加载失败后新会话没有，必须重新并入。
+    collect_events(
+        adapter,
+        run_input_with_system_prompt(
+            &harness,
+            "新会话",
+            Some(RunSessionContext {
+                harness_session_id: Some("gone-session".to_string()),
+                storage_dir: storage_dir.to_string_lossy().to_string(),
+                last_context_message_id: 0,
+                system_prompt_hash: Some("same-hash".to_string()),
+            }),
+            Some(system_prompt),
+            true,
+        ),
+    )
+    .await;
+
+    let requests = recorded_requests(&record_file);
+    assert!(requests
+        .iter()
+        .any(|request| request["method"] == "session/new"));
+    let prompt = requests
+        .iter()
+        .find(|request| request["method"] == "session/prompt")
+        .map(request_prompt_text)
+        .expect("应发出 session/prompt");
+    assert_eq!(prompt, format!("{system_prompt}\n\n新会话"));
+}
+
+#[tokio::test]
 async fn acp_adapter_ignores_session_load_replay() {
     require_node();
     let harness = setup_fake_harness(vec![
@@ -424,6 +687,7 @@ async fn acp_adapter_ignores_session_load_replay() {
                 harness_session_id: Some(first_session.clone()),
                 storage_dir: storage_dir.to_string_lossy().to_string(),
                 last_context_message_id: 0,
+                system_prompt_hash: None,
             }),
         ),
     )
@@ -507,6 +771,7 @@ async fn acp_adapter_skips_load_when_agent_lacks_capability() {
                 harness_session_id: Some(session_id),
                 storage_dir: storage_dir.to_string_lossy().to_string(),
                 last_context_message_id: 0,
+                system_prompt_hash: None,
             }),
         ),
     )
@@ -1093,6 +1358,7 @@ async fn acp_adapter_falls_back_to_new_session_when_load_fails() {
                     .to_string_lossy()
                     .to_string(),
                 last_context_message_id: 0,
+                system_prompt_hash: None,
             }),
         ),
     )

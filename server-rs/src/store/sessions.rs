@@ -57,7 +57,7 @@ impl SessionStore {
         let row = sqlx::query_as::<_, SessionRow>(
             "SELECT id, room_id, agent_id, harness, harness_session_id, status,
                     storage_dir, created_at, last_used_at, last_run_id,
-                    last_context_message_id
+                    last_context_message_id, system_prompt_hash
                FROM agent_sessions
               WHERE room_id = ? AND agent_id = ? AND status = 'active'",
         )
@@ -114,6 +114,7 @@ impl SessionStore {
                 last_used_at: None,
                 last_run_id: None,
                 last_context_message_id: 0,
+                system_prompt_hash: None,
             }),
             Err(error) => {
                 if let sqlx::Error::Database(db_error) = &error {
@@ -177,6 +178,16 @@ impl SessionStore {
         Ok(())
     }
 
+    /// 记录成功投递的 system prompt hash；不动水位与最近使用时间。
+    pub async fn record_system_prompt_hash(&self, id: i64, hash: &str) -> AppResult<()> {
+        sqlx::query("UPDATE agent_sessions SET system_prompt_hash = ? WHERE id = ?")
+            .bind(hash)
+            .bind(id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
     /// 归档：保留记录与存储，后续运行不再续接该会话。
     pub async fn archive(&self, id: i64) -> AppResult<bool> {
         let result = sqlx::query(
@@ -201,7 +212,7 @@ impl SessionStore {
         let row = sqlx::query_as::<_, SessionRow>(
             "SELECT id, room_id, agent_id, harness, harness_session_id, status,
                     storage_dir, created_at, last_used_at, last_run_id,
-                    last_context_message_id
+                    last_context_message_id, system_prompt_hash
                FROM agent_sessions WHERE id = ?",
         )
         .bind(id)
@@ -234,7 +245,7 @@ impl SessionStore {
         let rows = sqlx::query_as::<_, SessionRow>(
             "SELECT id, room_id, agent_id, harness, harness_session_id, status,
                     storage_dir, created_at, last_used_at, last_run_id,
-                    last_context_message_id
+                    last_context_message_id, system_prompt_hash
                FROM agent_sessions
               WHERE room_id = ?
               ORDER BY id DESC",
@@ -273,6 +284,7 @@ struct SessionRow {
     last_used_at: Option<i64>,
     last_run_id: Option<i64>,
     last_context_message_id: i64,
+    system_prompt_hash: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -333,6 +345,7 @@ fn map_session_row(row: SessionRow) -> AppResult<StoredAgentSession> {
         last_used_at: row.last_used_at,
         last_run_id: row.last_run_id,
         last_context_message_id: row.last_context_message_id,
+        system_prompt_hash: row.system_prompt_hash,
     })
 }
 

@@ -517,6 +517,8 @@ async fn run_zcode_app_server(
         additional_directories: input.additional_directories.clone(),
         permission_mode: input.permission_mode,
         prompt: input.prompt.clone(),
+        system_prompt: input.system_prompt.clone(),
+        system_prompt_delivered: input.system_prompt_delivered,
         resume_session_id: input
             .session
             .as_ref()
@@ -534,8 +536,20 @@ async fn run_zcode_cli(
     input: RunInput,
     sender: mpsc::Sender<AppResult<RunEvent>>,
 ) -> AppResult<()> {
-    let prompt_plan = plan_prompt_invocation(
+    // 只有真正复用 harness 会话时才可省略已投递的 system prompt；
+    // 无会话 ID 时本轮会新建会话，必须重新前置。
+    let resumed = input
+        .session
+        .as_ref()
+        .and_then(|session| session.harness_session_id.as_deref())
+        .is_some();
+    let prompt = crate::adapters::merge_system_prompt(
         &input.prompt,
+        input.system_prompt.as_deref(),
+        input.system_prompt_delivered && resumed,
+    );
+    let prompt_plan = plan_prompt_invocation(
+        &prompt,
         PROMPT_ATTACHMENT_LIMIT,
         None,
     )?;

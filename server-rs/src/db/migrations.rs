@@ -11,7 +11,7 @@ use sqlx::{Row, SqlitePool, Transaction};
 
 use crate::error::AppResult;
 
-pub const LATEST_VERSION: i64 = 25;
+pub const LATEST_VERSION: i64 = 26;
 
 enum Step {
     /// 一段可包含多条语句的 DDL/DML。
@@ -351,6 +351,16 @@ const MIGRATIONS: &[Migration] = &[
             },
             Step::Sql(V25_ROOM_MEMBERS_AGENT_INDEX),
         ],
+    },
+    Migration {
+        // v26：记录会话已成功投递的 system prompt hash；复用会话据此判断
+        // 人设是否已在 harness 上下文中，避免每轮重复。
+        version: 26,
+        steps: &[Step::AddColumn {
+            table: "agent_sessions",
+            column: "system_prompt_hash",
+            definition: "TEXT",
+        }],
     },
 ];
 
