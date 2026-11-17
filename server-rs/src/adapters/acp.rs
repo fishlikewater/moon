@@ -19,6 +19,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -442,9 +443,13 @@ async fn run_protocol(
 ) -> AppResult<RunOutcome> {
     // prompt 期间的文本增量在通知处理器里累积，prompt 响应返回后拼装 Final。
     let final_text = Arc::new(Mutex::new(String::new()));
+    // ACP session/load 会在响应前回放历史 session/update；prompt 发送前的
+    // 更新不属于本轮输出，统一丢弃，避免旧回复进入 Final 或 progress。
+    let accept_updates = Arc::new(AtomicBool::new(false));
 
     let notify_sender = sender.clone();
     let notify_final = Arc::clone(&final_text);
+    let notify_accept = Arc::clone(&accept_updates);
     let read_scope = Arc::clone(&scope);
     let write_scope = Arc::clone(&scope);
 
@@ -455,6 +460,9 @@ async fn run_protocol(
                 // 已声明差异：旧实现发送失败即终止运行；SDK 对无请求目标的
                 // 处理器错误只记 warn，agent 会继续跑到 turn 结束或运行超时。
                 // 消费端提前退出（如运行详情中途关闭）依赖总时长上限兜底。
+                if !notify_accept.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
                 if let Some(event) = map_update(notification.update) {
                     if let RunEvent::TextDelta(delta) = &event {
                         let mut guard = lock_final(&notify_final);
@@ -527,7 +535,15 @@ async fn run_protocol(
         .connect_with(
             ByteStreams::new(stdin.compat_write(), stdout.compat()),
             |connection: ConnectionTo<Agent>| async move {
-                run_session(connection, input, sender, &final_text, model_override).await
+                run_session(
+                    connection,
+                    input,
+                    sender,
+                    &final_text,
+                    &accept_updates,
+                    model_override,
+                )
+                .await
             },
         )
         .await;
@@ -541,6 +557,7 @@ async fn run_session(
     input: &RunInput,
     sender: &mpsc::Sender<AppResult<RunEvent>>,
     final_text: &Arc<Mutex<String>>,
+    accept_updates: &Arc<AtomicBool>,
     model_override: Option<&str>,
 ) -> Result<RunOutcome, SdkError> {
     // 1. initialize：宣告客户端能力；fs 反向读写按需开启。
@@ -583,6 +600,8 @@ async fn run_session(
 
     // 4. prompt：响应只在 turn 结束后返回；期间以通知与反向请求为主。
     //    agent 返回的错误信息保持原样透传，与既有行为一致。
+    //    加载会话的回放通知已全部到达；从这里开始接收的才是本轮输出。
+    accept_updates.store(true, Ordering::SeqCst);
     let prompt_response = connection
         .send_request(PromptRequest::new(
             SessionId::from(session_id.clone()),

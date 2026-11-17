@@ -387,6 +387,87 @@ async fn acp_adapter_resumes_session_when_reuse_enabled() {
 }
 
 #[tokio::test]
+async fn acp_adapter_ignores_session_load_replay() {
+    require_node();
+    let harness = setup_fake_harness(vec![
+        "--mode".to_string(),
+        "record".to_string(),
+        "--replay-load".to_string(),
+    ])
+    .await;
+    let adapter: Arc<dyn HarnessAdapter> = Arc::new(AcpAdapter::new(
+        harness.state.custom_harness_store.clone(),
+        harness.state.api_provider_store.clone(),
+        Some(harness.custom_harness_id),
+    ));
+
+    let storage_dir = harness.dir.path().join("session-storage");
+    std::fs::create_dir_all(&storage_dir).unwrap();
+
+    // 第一次运行建立会话；此时没有 load，不会收到回放。
+    let first = collect_events(adapter.clone(), run_input(&harness, "第一问", None)).await;
+    let first_session = first
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::Session(id) => Some(id.clone()),
+            _ => None,
+        })
+        .expect("第一次运行应有会话事件");
+
+    // 第二次运行加载同一会话：fake agent 在 load 响应前回放旧文本/思考/工具。
+    let second = collect_events(
+        adapter,
+        run_input(
+            &harness,
+            "第二问",
+            Some(RunSessionContext {
+                harness_session_id: Some(first_session.clone()),
+                storage_dir: storage_dir.to_string_lossy().to_string(),
+                last_context_message_id: 0,
+            }),
+        ),
+    )
+    .await;
+
+    let second_session = second
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::Session(id) => Some(id.clone()),
+            _ => None,
+        })
+        .expect("第二次运行应有会话事件");
+    assert_eq!(second_session, first_session);
+    assert_eq!(
+        second
+            .iter()
+            .filter(|event| matches!(event, RunEvent::Session(_)))
+            .count(),
+        1,
+        "每次运行只应发出一个 Session 事件：{second:?}"
+    );
+
+    let replayed: Vec<&RunEvent> = second
+        .iter()
+        .filter(|event| match event {
+            RunEvent::TextDelta(text) | RunEvent::Reasoning(text) | RunEvent::Final(text) => {
+                text.contains("回放")
+            }
+            RunEvent::ToolStart { name, .. } => name.contains("回放"),
+            _ => false,
+        })
+        .collect();
+    assert!(
+        replayed.is_empty(),
+        "session/load 回放不应进入本轮事件：{replayed:?}"
+    );
+    assert_eq!(
+        final_text(&second).as_deref(),
+        Some("第 1 轮：第二问"),
+        "Final 只能包含本轮 prompt 的回复：{second:?}"
+    );
+}
+
+#[tokio::test]
 async fn acp_adapter_skips_load_when_agent_lacks_capability() {
     require_node();
     let record_dir = tempfile::tempdir().unwrap();

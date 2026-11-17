@@ -23,6 +23,7 @@ const mode = argValue("--mode") ?? "normal";
 const recordPath = argValue("--record");
 const pidPath = argValue("--pid-file");
 const failLoad = process.argv.includes("--fail-load");
+const replayLoad = process.argv.includes("--replay-load");
 const legacyModels = process.argv.includes("--legacy-models");
 const hangHandshake = process.argv.includes("--hang-handshake");
 // --echo-env KEY：每轮回复首行回显 `ENV[KEY]=<当前进程环境值>`，
@@ -180,6 +181,25 @@ function handleMessage(message) {
           error: { code: -32002, message: "fake agent 拒绝加载会话" },
         });
         return;
+      }
+      if (replayLoad) {
+        // 模拟 ACP session/load：响应前通过 session/update 回放旧会话内容。
+        const sessionId = message.params?.sessionId ?? "sess-fake-loaded";
+        update(sessionId, {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "回放旧回复" },
+        });
+        update(sessionId, {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "回放思考" },
+        });
+        update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "replay-call",
+          title: "回放工具",
+          kind: "read",
+          status: "in_progress",
+        });
       }
       send({
         jsonrpc: "2.0",
