@@ -95,3 +95,20 @@ export function resolveAcpFormAvailability(input: {
   }
   return { kind: "unselected", usableCount, pendingCount, firstError };
 }
+
+/**
+ * 纯函数：保存未就绪 ACP agent 前的确认文案；可用或其他分支返回 null。
+ *
+ * 表单允许先保存草稿，但必须让用户知道当前选择运行会失败，并给出下一步。
+ */
+export function unavailableHarnessWarning(
+  availability: AcpFormAvailability,
+): string | null {
+  if (availability.kind === "selected-error") {
+    return `「${availability.name}」当前不可用：${availability.error}\n仍要保存吗？保存后运行会失败，建议先在 Harness 页面修复并重新检测。`;
+  }
+  if (availability.kind === "selected-pending") {
+    return `「${availability.name}」尚未检测能力，运行可能失败。\n仍要保存吗？建议先点「立即检测」。`;
+  }
+  return null;
+}

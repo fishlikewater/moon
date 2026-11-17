@@ -4,6 +4,7 @@ import type { Agent, Message, Room } from "@moon/shared";
 import {
   canSendDirectMessage,
   DirectChatSideFacts,
+  DirectDeleteDialog,
   DirectEmptyState,
   DirectMessage,
 } from "./DirectChatPage";
@@ -164,5 +165,48 @@ describe("canSendDirectMessage", () => {
     expect(canSendDirectMessage("hi", 0, false)).toBe(true);
     expect(canSendDirectMessage("", 1, false)).toBe(true);
     expect(canSendDirectMessage("hi", 1, true)).toBe(false);
+  });
+});
+
+describe("DirectDeleteDialog", () => {
+  function render(overrides: {
+    runningCount?: number;
+    deleting?: boolean;
+    error?: string | null;
+  } = {}): string {
+    return renderToStaticMarkup(
+      <DirectDeleteDialog
+        agentName="小助手"
+        runningCount={overrides.runningCount ?? 0}
+        deleting={overrides.deleting ?? false}
+        error={overrides.error ?? null}
+        onCancel={() => {}}
+        onConfirm={() => {}}
+      />,
+    );
+  }
+
+  it("说明删除后果并保留工作区文件", () => {
+    const html = render();
+
+    expect(html).toContain("删除对话");
+    expect(html).toContain("消息、运行记录与会话都会删除，无法恢复");
+    expect(html).toContain("工作区文件保留");
+    expect(html).toMatch(/<button[^>]*>确认删除<\/button>/);
+  });
+
+  it("运行中禁用确认并提示等待", () => {
+    const html = render({ runningCount: 1 });
+
+    expect(html).toContain("有运行中的回复");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>确认删除<\/button>/);
+  });
+
+  it("删除中与失败原因都在弹层内反馈", () => {
+    const deleting = render({ deleting: true });
+    expect(deleting).toContain("删除中…");
+
+    const failed = render({ error: "房间有运行中的回复" });
+    expect(failed).toMatch(/role="alert"[^>]*>房间有运行中的回复</);
   });
 });

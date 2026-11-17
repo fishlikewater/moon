@@ -438,3 +438,73 @@ async fn deleting_agent_removes_legacy_duplicate_direct_rooms() {
     assert!(json_ids(&get(&app, "/api/rooms?kind=direct").await.body).is_empty());
     assert!(!workspace.exists(), "共享沙盒目录应在删除智能体时清理");
 }
+
+#[tokio::test]
+async fn direct_room_can_be_deleted() {
+    let app = setup().await;
+    let agent = create_agent(&app, "可删除直聊").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let direct = post_empty(&app, &format!("/api/agents/{agent_id}/direct-chat")).await;
+    let room_id = direct.body["id"].as_i64().unwrap();
+    let workspace_dir = direct.body["workspaceDir"].as_str().unwrap().to_string();
+
+    let removed = delete(&app, &format!("/api/rooms/{room_id}")).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+
+    let fetched = get(&app, &format!("/api/agents/{agent_id}/direct-chat")).await;
+    assert_eq!(fetched.status, StatusCode::NOT_FOUND);
+    assert!(json_ids(&get(&app, "/api/rooms?kind=direct").await.body).is_empty());
+    assert!(app.state.room_store.get_by_id(room_id).await.unwrap().is_none());
+    assert!(
+        std::path::Path::new(&workspace_dir).is_dir(),
+        "删除对话只清理房间级数据，工作区文件应保留"
+    );
+}
+
+#[tokio::test]
+async fn room_delete_rejects_running_runs() {
+    let app = setup().await;
+    let agent = create_agent(&app, "运行中直聊").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let direct = post_empty(&app, &format!("/api/agents/{agent_id}/direct-chat")).await;
+    let room_id = direct.body["id"].as_i64().unwrap();
+
+    sqlx::query(
+        "INSERT INTO agent_runs (room_id, agent_id, status, prompt, created_at)
+         VALUES (?, ?, 'running', 'test', 1)",
+    )
+    .bind(room_id)
+    .bind(agent_id)
+    .execute(app.state.db.pool())
+    .await
+    .unwrap();
+
+    let blocked = delete(&app, &format!("/api/rooms/{room_id}")).await;
+    assert_eq!(blocked.status, StatusCode::CONFLICT, "{:?}", blocked.body);
+    assert!(
+        blocked.body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("运行中的回复"),
+        "应提示等待运行完成：{:?}",
+        blocked.body
+    );
+    assert!(
+        app.state
+            .room_store
+            .get_by_id(room_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "拒绝删除时房间必须保留"
+    );
+
+    sqlx::query("UPDATE agent_runs SET status = 'completed' WHERE room_id = ?")
+        .bind(room_id)
+        .execute(app.state.db.pool())
+        .await
+        .unwrap();
+    let removed = delete(&app, &format!("/api/rooms/{room_id}")).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+}
+

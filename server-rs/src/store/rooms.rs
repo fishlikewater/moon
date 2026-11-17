@@ -491,6 +491,17 @@ impl RoomStore {
         .await?;
         Ok(exists != 0)
     }
+
+    /// 是否还有运行中的智能体回复；删除房间前用于避免与后台写入竞争。
+    pub async fn has_running_runs(&self, room_id: i64) -> AppResult<bool> {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM agent_runs WHERE room_id = ? AND status = 'running')",
+        )
+        .bind(room_id)
+        .fetch_one(self.pool())
+        .await?;
+        Ok(exists != 0)
+    }
 }
 
 #[derive(sqlx::FromRow)]

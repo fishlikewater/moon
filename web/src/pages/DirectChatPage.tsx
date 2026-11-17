@@ -125,6 +125,25 @@ function TrashIcon() {
   );
 }
 
+/** 清屏只删除消息，与「删除对话」区分，避免两个垃圾桶图标。 */
+function ClearIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M4 20h16" />
+      <path d="M14.5 4.5l5 5-8 8H6l-1.5-1.5a2 2 0 0 1 0-2.8l7-7a2 2 0 0 1 3 0Z" />
+    </svg>
+  );
+}
+
 function PanelIcon() {
   return (
     <svg
@@ -424,6 +443,84 @@ export function DirectChatSideFacts({
 }
 
 /**
+ * 删除对话确认弹层：运行中禁用确认，删除进行中与失败原因都留在弹层内。
+ *
+ * 只负责展示；API 调用与跳转由页面持有。
+ */
+export function DirectDeleteDialog({
+  agentName,
+  runningCount,
+  deleting,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  agentName: string;
+  runningCount: number;
+  deleting: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const blocked = runningCount > 0;
+  return (
+    <div className="modal-layer">
+      <div
+        className="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="direct-delete-title"
+      >
+        <header className="modal-head">
+          <h2 id="direct-delete-title" className="card-title">
+            删除对话
+          </h2>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            aria-label="关闭删除对话框"
+            onClick={onCancel}
+            disabled={deleting}
+          >
+            关闭
+          </button>
+        </header>
+        <p className="muted">
+          删除与 {agentName}{" "}
+          的对话后，消息、运行记录与会话都会删除，无法恢复；工作区文件保留。
+        </p>
+        {blocked && (
+          <p className="field-hint">有运行中的回复，等待完成或停止后再删除。</p>
+        )}
+        {error !== null && (
+          <p className="banner error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="modal-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={onCancel}
+            disabled={deleting}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            className="btn btn-danger"
+            onClick={onConfirm}
+            disabled={deleting || blocked}
+          >
+            {deleting ? "删除中…" : "确认删除"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * 智能体直聊页：`/chat/room/:roomId`。
  *
  * 直聊是隐藏的单成员房间，消息、流式、会话、附件与运行详情都复用房间链路；
@@ -453,6 +550,9 @@ export default function DirectChatPage() {
   const [clearError, setClearError] = useState<string | null>(null);
   const [clearNotice, setClearNotice] = useState<string | null>(null);
   const [directSideOpen, setDirectSideOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentKeyRef = useRef(0);
@@ -579,6 +679,22 @@ export default function DirectChatPage() {
       sideToggleRef.current?.focus();
     }
   }, [directSideOpen]);
+
+  const confirmDelete = async () => {
+    if (roomId === null || deleting || runningCount > 0) {
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api.rooms.remove(roomId);
+      navigate("/agents");
+    } catch (cause) {
+      setDeleteError(errorMessage(cause));
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const changePermissionMode = async (mode: Room["permissionMode"]) => {
     if (room === null || permissionSaving) {
@@ -795,6 +911,18 @@ export default function DirectChatPage() {
                 setClearError(null);
                 setClearNotice(null);
                 setClearOpen(true);
+              }}
+            >
+              <ClearIcon />
+            </button>
+            <button
+              type="button"
+              className="direct-rail-button is-danger"
+              title="删除对话"
+              aria-label="删除对话"
+              onClick={() => {
+                setDeleteError(null);
+                setDeleteOpen(true);
               }}
             >
               <TrashIcon />
@@ -1065,6 +1193,17 @@ export default function DirectChatPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {deleteOpen && (
+        <DirectDeleteDialog
+          agentName={agent.name}
+          runningCount={runningCount}
+          deleting={deleting}
+          error={deleteError}
+          onCancel={() => setDeleteOpen(false)}
+          onConfirm={() => void confirmDelete()}
+        />
       )}
     </section>
   );

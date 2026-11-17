@@ -182,12 +182,6 @@ export function AcpHarnessRegistry({ onChanged }: AcpHarnessRegistryProps) {
     setFormTarget(null);
   }, []);
 
-  const handleFormSaved = useCallback(() => {
-    setFormTarget(null);
-    // 保存后静默刷新：列表保持挂载，弹层卸载时触发按钮仍在，焦点才能归还。
-    void reload({ showLoading: false });
-  }, [reload]);
-
   const probe = useCallback(
     async (item: Pick<CustomHarness, "id">, timeoutSecs?: number) => {
       setProbeError(null);
@@ -205,6 +199,16 @@ export function AcpHarnessRegistry({ onChanged }: AcpHarnessRegistryProps) {
       }
     },
     [reload],
+  );
+
+  // 保存后立即重新探测：命令/参数/环境变量可能刚被修改，旧的 probeError
+  // 或能力快照不能继续当作当前状态展示。
+  const handleFormSaved = useCallback(
+    (saved: CustomHarness) => {
+      setFormTarget(null);
+      void probe(saved, FIRST_PROBE_TIMEOUT_SECS);
+    },
+    [probe],
   );
 
   // 新手引导的自动探测：从未探测的条目在列表就绪后串行探测一次。

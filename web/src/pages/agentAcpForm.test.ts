@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AcpCapabilities } from "@moon/shared";
-import { resolveAcpFormAvailability } from "./agentAcpForm";
+import {
+  resolveAcpFormAvailability,
+  unavailableHarnessWarning,
+} from "./agentAcpForm";
 
 const READY_CAPABILITIES: AcpCapabilities = {
   models: [
@@ -187,5 +190,50 @@ describe("resolveAcpFormAvailability", () => {
       modelCount: 2,
       modeCount: 3,
     });
+  });
+});
+
+describe("unavailableHarnessWarning", () => {
+  it("选中失败项时给出原因与修复建议", () => {
+    const warning = unavailableHarnessWarning({
+      kind: "selected-error",
+      name: "Kimi",
+      error: "找不到命令「kimi」",
+    });
+
+    expect(warning).toContain("「Kimi」当前不可用：找不到命令「kimi」");
+    expect(warning).toContain("仍要保存吗");
+    expect(warning).toContain("Harness 页面修复");
+  });
+
+  it("选中未检测项时提示先检测", () => {
+    const warning = unavailableHarnessWarning({
+      kind: "selected-pending",
+      name: "Codex",
+    });
+
+    expect(warning).toContain("「Codex」尚未检测能力");
+    expect(warning).toContain("仍要保存吗");
+    expect(warning).toContain("立即检测");
+  });
+
+  it("可用或其他分支不需要保存确认", () => {
+    expect(
+      unavailableHarnessWarning({
+        kind: "selected-ready",
+        name: "Kimi",
+        modelCount: 1,
+        modeCount: 1,
+      }),
+    ).toBeNull();
+    expect(
+      unavailableHarnessWarning({
+        kind: "unselected",
+        usableCount: 0,
+        pendingCount: 0,
+        firstError: null,
+      }),
+    ).toBeNull();
+    expect(unavailableHarnessWarning({ kind: "empty" })).toBeNull();
   });
 });

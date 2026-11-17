@@ -27,11 +27,18 @@ import {
   resolveProviderOptions,
 } from "../components/agentFormProvider";
 import { AcpFormGuide } from "../components/AcpFormGuide";
+import {
+  FIRST_PROBE_TIMEOUT_SECS,
+  resolveAcpAvailability,
+} from "../components/AcpHarnessRegistry";
 import { AgentAvatar } from "../components/AgentAvatar";
 import { EmptyState } from "../components/layout/EmptyState";
 import { ListSkeleton } from "../components/layout/ListSkeleton";
 import { PageHeader } from "../components/layout/PageHeader";
-import { resolveAcpFormAvailability } from "./agentAcpForm";
+import {
+  resolveAcpFormAvailability,
+  unavailableHarnessWarning,
+} from "./agentAcpForm";
 import { shouldOpenNew, withoutNewParam } from "./newEntry";
 
 const HARNESS_OPTIONS: ReadonlyArray<{ value: HarnessKind; label: string }> = [
@@ -155,6 +162,8 @@ export default function AgentsPage() {
   const [customHarnessesError, setCustomHarnessesError] = useState<
     string | null
   >(null);
+  const [reprobeing, setReprobeing] = useState(false);
+  const [reprobeError, setReprobeError] = useState<string | null>(null);
   const [providers, setProviders] = useState<ApiProvider[]>([]);
   const modalRef = useRef<HTMLDivElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
@@ -360,6 +369,36 @@ export default function AgentsPage() {
       form.customHarnessId,
     ],
   );
+
+  // 静默刷新注册表：保留当前表单与引导状态，只替换条目快照。
+  const refreshCustomHarnesses = useCallback(async () => {
+    setCustomHarnessesError(null);
+    try {
+      setCustomHarnesses(await api.customHarnesses.list());
+    } catch (cause) {
+      setCustomHarnessesError(errorMessage(cause));
+    }
+  }, []);
+
+  // 重新探测当前选中的 ACP agent；失败原因由服务端落库，刷新后进入 guide。
+  const reprobeSelectedHarness = async () => {
+    if (form.customHarnessId === "" || reprobeing) {
+      return;
+    }
+    setReprobeing(true);
+    setReprobeError(null);
+    try {
+      await api.customHarnesses.probe(
+        Number(form.customHarnessId),
+        FIRST_PROBE_TIMEOUT_SECS,
+      );
+    } catch (cause) {
+      setReprobeError(errorMessage(cause));
+    } finally {
+      await refreshCustomHarnesses();
+      setReprobeing(false);
+    }
+  };
 
   // 供应商三级联动：仅启用供应商可作候选；绑定后模型候选来自供应商 models。
   const providerOptions = useMemo(
@@ -618,6 +657,7 @@ export default function AgentsPage() {
   };
 
   const changeCustomHarness = (value: string): void => {
+    setReprobeError(null);
     setForm((current) => ({
       ...current,
       ...nextCustomHarnessSelection(value),
@@ -681,6 +721,13 @@ export default function AgentsPage() {
 
     if (form.harness === "acp" && form.customHarnessId === "") {
       setError("harness 为 acp 时必须选择一个自定义 ACP agent");
+      setSaving(false);
+      return;
+    }
+
+    // 未就绪也可保存草稿，但必须让用户确认运行会失败。
+    const harnessWarning = unavailableHarnessWarning(acpFormAvailability);
+    if (harnessWarning !== null && !window.confirm(harnessWarning)) {
       setSaving(false);
       return;
     }
@@ -1087,11 +1134,17 @@ export default function AgentsPage() {
                       aria-label="选择自定义 ACP agent"
                     >
                       <option value="">选择已注册的 ACP agent…</option>
-                      {customHarnesses.map((item) => (
-                        <option key={item.id} value={String(item.id)}>
-                          {item.name}（{item.command}）
-                        </option>
-                      ))}
+                      {customHarnesses.map((item) => {
+                        const availability = resolveAcpAvailability(item);
+                        return (
+                          <option key={item.id} value={String(item.id)}>
+                            {item.name}（{item.command}）
+                            {availability.tone === "ready"
+                              ? ""
+                              : ` · ${availability.label}`}
+                          </option>
+                        );
+                      })}
                     </select>
                   </label>
 
@@ -1189,7 +1242,16 @@ export default function AgentsPage() {
                     ))}
                   </div>
                 </div>
-                <AcpFormGuide availability={acpFormAvailability} />
+                <AcpFormGuide
+                  availability={acpFormAvailability}
+                  onReprobe={
+                    form.customHarnessId === ""
+                      ? undefined
+                      : () => void reprobeSelectedHarness()
+                  }
+                  reprobeing={reprobeing}
+                  reprobeError={reprobeError}
+                />
               </section>
             )}
 

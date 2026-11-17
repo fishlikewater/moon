@@ -31,7 +31,8 @@ interface AcpHarnessFormModalProps {
   /** ACP registry 目录状态：驱动预设选择器与失败回退。 */
   registry: AcpRegistryState;
   onClose: () => void;
-  onSaved: () => void;
+  /** 保存成功后的条目快照；调用方用于刷新与重新探测。 */
+  onSaved: (saved: CustomHarness) => void;
 }
 
 const FOCUSABLE_SELECTOR = [
@@ -234,15 +235,14 @@ export function AcpHarnessFormModal({
     setFormError(null);
     try {
       const payload = { name, command, args, env };
-      if (form.editingId === null) {
-        await api.customHarnesses.create(payload);
-      } else {
-        await api.customHarnesses.update(form.editingId, payload);
-      }
+      const saved =
+        form.editingId === null
+          ? await api.customHarnesses.create(payload)
+          : await api.customHarnesses.update(form.editingId, payload);
       savingRef.current = false;
       setSaving(false);
-      // 成功即关闭弹层；列表刷新由注册表的 onSaved 负责。
-      onSaved();
+      // 成功即关闭弹层；列表刷新与重新探测由注册表的 onSaved 负责。
+      onSaved(saved);
     } catch (cause) {
       savingRef.current = false;
       setSaving(false);

@@ -259,8 +259,8 @@ impl RoomService {
 
     /// 删除房间及其全部房间级数据。
     ///
-    /// 运行中的讨论或委派批次仍在后台循环，直接删除会与消息写入竞争，
-    /// 因此先拒绝并要求停止。
+    /// 运行中的讨论、委派批次或智能体回复仍在后台循环，直接删除会与消息写入
+    /// 竞争，因此先拒绝并要求停止。
     pub async fn remove(&self, raw_id: &str) -> AppResult<()> {
         let id = parse_id(raw_id)?;
         self.require_room(id).await?;
@@ -270,6 +270,11 @@ impl RoomService {
         }
         if self.rooms.has_running_collaboration(id).await? {
             return Err(AppError::constraint("房间有进行中的委派，请先停止委派"));
+        }
+        if self.rooms.has_running_runs(id).await? {
+            return Err(AppError::constraint(
+                "房间有运行中的回复，请等待完成或停止后再删除",
+            ));
         }
 
         if self.rooms.delete(id).await? {
