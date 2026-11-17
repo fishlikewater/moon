@@ -59,6 +59,7 @@ use crate::domain::agent::{HarnessKind, ModelConfig};
 use crate::domain::harness::{
     AcpCapabilities, AcpConfigChoice, AcpConfigOption, AcpMode, AcpModelOption, CustomHarness,
 };
+use crate::domain::provider::{provider_env_pairs, ApiProvider};
 use crate::domain::room::RoomPermissionMode;
 use crate::domain::run_event::{RunEvent, RunInput};
 use crate::error::{AppError, AppResult};
@@ -128,7 +129,30 @@ async fn run_with_harness(
     sender: &mpsc::Sender<AppResult<RunEvent>>,
 ) -> AppResult<()> {
     // 供应商注入在 spawn 前解析：绑定失效直接失败，不发请求不启动进程。
-    let provider_injection = resolve_provider_injection(input.config.as_ref(), providers).await?;
+    // 可桥接的 agent 会生成隔离配置；其余保持纯 env 注入。
+    let provider = resolve_bound_provider(input.config.as_ref(), providers).await?;
+    let bridge = match provider.as_ref() {
+        Some(provider) => super::acp_provider::prepare_provider_bridge(
+            harness,
+            provider,
+            input.config.as_ref(),
+            input.session.as_ref(),
+        )?,
+        None => None,
+    };
+    let provider_env: Vec<(String, String)> = match &bridge {
+        Some(plan) => plan.env.clone(),
+        None => provider
+            .as_ref()
+            .map(|provider| {
+                provider_env_pairs(provider.protocol, &provider.base_url, &provider.api_key)
+                    .into_iter()
+                    .map(|(key, value)| (key.to_string(), value))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+
     let (program, source) = resolved_program(&harness.command);
     let mut command = Command::new(&program);
     command
@@ -143,10 +167,8 @@ async fn run_with_harness(
         command.env(key, value);
     }
     // 供应商注入后置：覆盖手填同名词（绑定供应商即生效的语义）。
-    if let Some(pairs) = &provider_injection {
-        for (key, value) in pairs {
-            command.env(key, value);
-        }
+    for (key, value) in &provider_env {
+        command.env(key, value);
     }
 
     let mut child = command.spawn().map_err(|error| {
@@ -177,9 +199,12 @@ async fn run_with_harness(
         &input.workspace_dir,
         &input.additional_directories,
     ));
+    let model_override = bridge
+        .as_ref()
+        .and_then(|plan| plan.effective_model.as_deref());
     let result = super::with_run_timeout(
         input.timeout,
-        run_protocol(&input, scope, stdin, stdout, sender),
+        run_protocol(&input, scope, stdin, stdout, sender, model_override),
     )
     .await;
 
@@ -209,15 +234,15 @@ async fn run_with_harness(
     }
 }
 
-/// 解析智能体绑定的模型供应商注入（spawn env）。
+/// 解析智能体绑定的模型供应商。
 ///
 /// - 未绑定（config 无 `apiProviderId`）→ `None`，行为与历史一致；
 /// - 绑定失效（不存在/已停用）→ 可读错误，不 spawn；
-/// - 正常 → 按协议映射的 BASE_URL/API_KEY 键值对，覆盖手填同名词。
-async fn resolve_provider_injection(
+/// - 正常 → 返回供应商；env 或桥接配置由调用方按 agent 类型决定。
+async fn resolve_bound_provider(
     config: Option<&ModelConfig>,
     providers: &ApiProviderStore,
-) -> AppResult<Option<Vec<(String, String)>>> {
+) -> AppResult<Option<ApiProvider>> {
     let provider_id = config
         .and_then(|config| config.get("apiProviderId"))
         .and_then(Value::as_i64);
@@ -235,16 +260,7 @@ async fn resolve_provider_injection(
             provider.name
         )));
     }
-    Ok(Some(
-        crate::domain::provider::provider_env_pairs(
-            provider.protocol,
-            &provider.base_url,
-            &provider.api_key,
-        )
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect(),
-    ))
+    Ok(Some(provider))
 }
 
 /// 探测 ACP agent 能力：initialize + session/new，不发 prompt；
@@ -367,6 +383,7 @@ async fn run_protocol(
     stdin: ChildStdin,
     stdout: ChildStdout,
     sender: &mpsc::Sender<AppResult<RunEvent>>,
+    model_override: Option<&str>,
 ) -> AppResult<()> {
     // prompt 期间的文本增量在通知处理器里累积，prompt 响应返回后拼装 Final。
     let final_text = Arc::new(Mutex::new(String::new()));
@@ -455,7 +472,7 @@ async fn run_protocol(
         .connect_with(
             ByteStreams::new(stdin.compat_write(), stdout.compat()),
             |connection: ConnectionTo<Agent>| async move {
-                run_session(connection, input, sender, &final_text).await
+                run_session(connection, input, sender, &final_text, model_override).await
             },
         )
         .await;
@@ -469,6 +486,7 @@ async fn run_session(
     input: &RunInput,
     sender: &mpsc::Sender<AppResult<RunEvent>>,
     final_text: &Arc<Mutex<String>>,
+    model_override: Option<&str>,
 ) -> Result<(), SdkError> {
     // 1. initialize：宣告客户端能力；fs 反向读写按需开启。
     let init_response = connection
@@ -498,7 +516,15 @@ async fn run_session(
         .map_err(sdk_internal)?;
 
     // 3. 偏好：权限模式与模型是 best-effort 设置，失败只提示，不中断运行。
-    apply_session_preferences(input, &session_id, &capabilities, &connection, sender).await?;
+    apply_session_preferences(
+        input,
+        &session_id,
+        &capabilities,
+        &connection,
+        sender,
+        model_override,
+    )
+    .await?;
 
     // 4. prompt：响应只在 turn 结束后返回；期间以通知与反向请求为主。
     //    agent 返回的错误信息保持原样透传，与既有行为一致。
@@ -747,32 +773,68 @@ fn model_config_option(capabilities: &AcpCapabilities) -> Option<&AcpConfigOptio
     })
 }
 
-/// 房间权限模式 → agent 宣告的模式 id；只从 availableModes 中选择。
-fn map_permission_mode(mode: RoomPermissionMode, capabilities: &AcpCapabilities) -> Option<String> {
-    let candidates: &[&str] = match mode {
-        RoomPermissionMode::Plan => &["plan", "architect", "ask"],
-        RoomPermissionMode::Auto => &["acceptedits", "accept_edits", "code", "default"],
-        RoomPermissionMode::Full => &[
-            "bypasspermissions",
-            "bypass_permissions",
-            "full-access",
-            "full_access",
-            "fullaccess",
-            "code",
-            "default",
-        ],
+/// 语义模式组：不同 agent 对同一权限意图使用不同 id（Kimi `yolo`、
+/// Claude `bypassPermissions`、Codex `full-access`），按组匹配。
+const PLAN_MODES: &[&str] = &["plan", "architect", "ask", "read-only"];
+const AUTO_MODES: &[&str] = &["auto", "acceptedits", "accept_edits", "code", "default"];
+const FULL_MODES: &[&str] = &[
+    "yolo",
+    "bypasspermissions",
+    "bypass_permissions",
+    "full-access",
+    "full_access",
+    "fullaccess",
+    "code",
+    "default",
+];
+
+/// 纯函数：把请求的 mode 解析为 agent 实际宣告的 id。
+///
+/// 先精确匹配 id（大小写不敏感），再按语义组匹配 id 或显示名；这样显式
+/// 旧值 `full-access` 在 Kimi 上会落到 `yolo`，不再产生误导性回退警告。
+fn resolve_declared_mode(requested: &str, capabilities: &AcpCapabilities) -> Option<String> {
+    let key = requested.trim().to_lowercase();
+    if key.is_empty() {
+        return None;
+    }
+    if let Some(found) = capabilities
+        .modes
+        .iter()
+        .find(|mode| mode.id.to_lowercase() == key)
+    {
+        return Some(found.id.clone());
+    }
+
+    let group: &[&str] = match key.as_str() {
+        "plan" | "architect" | "ask" | "read-only" | "readonly" | "read_only" => PLAN_MODES,
+        "auto" | "acceptedits" | "accept_edits" | "accept-edits" | "code" | "default" => AUTO_MODES,
+        "yolo" | "full-access" | "full_access" | "fullaccess" | "bypasspermissions"
+        | "bypass_permissions" | "bypass-permissions" | "dontask" | "dont_ask" | "dont-ask" => {
+            FULL_MODES
+        }
+        _ => return None,
     };
 
-    for candidate in candidates {
-        if let Some(found) = capabilities.modes.iter().find(|available| {
-            let id = available.id.to_lowercase();
-            let name = available.name.to_lowercase();
-            id.contains(candidate) || name.contains(candidate)
+    for candidate in group {
+        if let Some(found) = capabilities.modes.iter().find(|mode| {
+            let id = mode.id.to_lowercase();
+            let name = mode.name.to_lowercase();
+            id == *candidate || name == *candidate || name.contains(candidate)
         }) {
             return Some(found.id.clone());
         }
     }
     None
+}
+
+/// 房间权限模式 → agent 宣告的模式 id；只从 availableModes 中选择。
+fn map_permission_mode(mode: RoomPermissionMode, capabilities: &AcpCapabilities) -> Option<String> {
+    let requested = match mode {
+        RoomPermissionMode::Plan => "plan",
+        RoomPermissionMode::Auto => "auto",
+        RoomPermissionMode::Full => "full-access",
+    };
+    resolve_declared_mode(requested, capabilities)
 }
 
 /// 应用会话模式与思考等级偏好；任何协议错误只发 Status，不影响后续 prompt。
@@ -788,6 +850,7 @@ async fn apply_session_preferences(
     capabilities: &AcpCapabilities,
     connection: &ConnectionTo<Agent>,
     sender: &mpsc::Sender<AppResult<RunEvent>>,
+    model_override: Option<&str>,
 ) -> Result<(), SdkError> {
     let config = input.config.as_ref();
     let session_mode = config
@@ -806,12 +869,12 @@ async fn apply_session_preferences(
     // sessionMode 命中过 modes 时，旧 reasoningLevel 兼容链必须跳过（互斥优先链）。
     let mut session_mode_applied = false;
     if let Some(requested) = session_mode {
-        if capabilities.modes.iter().any(|mode| mode.id == requested) {
-            if capabilities.current_mode_id.as_deref() != Some(requested) {
+        if let Some(resolved) = resolve_declared_mode(requested, capabilities) {
+            if capabilities.current_mode_id.as_deref() != Some(resolved.as_str()) {
                 let result = connection
                     .send_request(SetSessionModeRequest::new(
                         SessionId::from(session_id.to_string()),
-                        SessionModeId::new(requested.to_string()),
+                        SessionModeId::new(resolved),
                     ))
                     .block_task()
                     .await;
@@ -842,12 +905,12 @@ async fn apply_session_preferences(
     // 仅当 sessionMode 未命中时才尝试，避免双 set_mode 相互覆盖。
     if !session_mode_applied {
         if let Some(requested) = reasoning_level {
-            if capabilities.modes.iter().any(|mode| mode.id == requested) {
-                if capabilities.current_mode_id.as_deref() != Some(requested) {
+            if let Some(resolved) = resolve_declared_mode(requested, capabilities) {
+                if capabilities.current_mode_id.as_deref() != Some(resolved.as_str()) {
                     let result = connection
                         .send_request(SetSessionModeRequest::new(
                             SessionId::from(session_id.to_string()),
-                            SessionModeId::new(requested.to_string()),
+                            SessionModeId::new(resolved),
                         ))
                         .block_task()
                         .await;
@@ -925,7 +988,15 @@ async fn apply_session_preferences(
         }
     }
 
-    apply_model_preference(input, session_id, capabilities, connection, sender).await
+    apply_model_preference(
+        input,
+        session_id,
+        capabilities,
+        connection,
+        sender,
+        model_override,
+    )
+    .await
 }
 
 /// 识别 agent 宣告的思考类配置项：category 或 id 不区分大小写含 think/reason。
@@ -986,6 +1057,38 @@ async fn apply_permission_mode_mapping(
     Ok(())
 }
 
+/// 纯函数：把请求的模型解析为 agent 实际宣告的 value。
+///
+/// 供应商模型常以裸 id 保存，而 agent 可能宣告成 `provider/model`；显示名
+/// 也可能与 id 相同。三者都接受，避免把已注册的模型误判为「未宣告」。
+fn resolve_declared_model<'a>(
+    requested: &str,
+    capabilities: &'a AcpCapabilities,
+) -> Option<&'a str> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return None;
+    }
+    capabilities
+        .models
+        .iter()
+        .find(|model| model.value == requested)
+        .or_else(|| {
+            capabilities
+                .models
+                .iter()
+                .find(|model| model.name.eq_ignore_ascii_case(requested))
+        })
+        .or_else(|| {
+            let suffix = format!("/{requested}");
+            capabilities
+                .models
+                .iter()
+                .find(|model| model.value.ends_with(&suffix))
+        })
+        .map(|model| model.value.as_str())
+}
+
 /// 应用智能体的模型偏好：新式 configOptions 走 set_config_option，
 /// 旧式 models 走 set_model；未宣告时只提示。
 async fn apply_model_preference(
@@ -994,24 +1097,31 @@ async fn apply_model_preference(
     capabilities: &AcpCapabilities,
     connection: &ConnectionTo<Agent>,
     sender: &mpsc::Sender<AppResult<RunEvent>>,
+    model_override: Option<&str>,
 ) -> Result<(), SdkError> {
-    let Some(requested) = input
-        .config
-        .as_ref()
-        .and_then(|config| config.get("model"))
-        .and_then(Value::as_str)
+    let requested = model_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    else {
+        .map(str::to_string)
+        .or_else(|| {
+            input
+                .config
+                .as_ref()
+                .and_then(|config| config.get("model"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+    let Some(requested) = requested else {
         return Ok(());
     };
+    let resolved = resolve_declared_model(&requested, capabilities)
+        .map(str::to_string)
+        .unwrap_or_else(|| requested.clone());
 
     if let Some(option) = model_config_option(capabilities) {
-        if !option
-            .options
-            .iter()
-            .any(|choice| choice.value == requested)
-        {
+        if !option.options.iter().any(|choice| choice.value == resolved) {
             send_event(
                 sender,
                 RunEvent::Status(format!(
@@ -1020,12 +1130,12 @@ async fn apply_model_preference(
             )
             .await
             .map_err(sdk_internal)?;
-        } else if option.current_value.as_deref() != Some(requested) {
+        } else if option.current_value.as_deref() != Some(resolved.as_str()) {
             let result = connection
                 .send_request(SetSessionConfigOptionRequest::new(
                     SessionId::from(session_id.to_string()),
                     SessionConfigId::new(option.id.clone()),
-                    SessionConfigOptionValue::from(requested),
+                    SessionConfigOptionValue::from(resolved.as_str()),
                 ))
                 .block_task()
                 .await;
@@ -1041,14 +1151,14 @@ async fn apply_model_preference(
     } else if capabilities
         .models
         .iter()
-        .any(|model| model.value == requested)
+        .any(|model| model.value == resolved)
     {
         // 旧式 models 没有 configOptions，使用 ACP 早期的 set_model 请求。
         // 官方 SDK 未建模该方法，走 SDK 的 raw 消息通道保持既有行为。
-        if capabilities.current_model_id.as_deref() != Some(requested) {
+        if capabilities.current_model_id.as_deref() != Some(resolved.as_str()) {
             let message = UntypedMessage::new(
                 "session/set_model",
-                json!({ "sessionId": session_id, "modelId": requested }),
+                json!({ "sessionId": session_id, "modelId": resolved }),
             )?;
             let result = connection.send_request(message).block_task().await;
             if let Err(error) = result {
@@ -1465,5 +1575,91 @@ mod tests {
             map_permission_mode(RoomPermissionMode::Plan, &ask_only).as_deref(),
             Some("2")
         );
+    }
+
+    #[test]
+    fn mode_aliases_follow_each_agent_vocabulary() {
+        let kimi = capabilities_with_modes(&[
+            ("default", "Default"),
+            ("plan", "Plan"),
+            ("auto", "Auto"),
+            ("yolo", "YOLO"),
+        ]);
+        assert_eq!(
+            map_permission_mode(RoomPermissionMode::Auto, &kimi).as_deref(),
+            Some("auto")
+        );
+        assert_eq!(
+            map_permission_mode(RoomPermissionMode::Full, &kimi).as_deref(),
+            Some("yolo")
+        );
+        // 旧智能体显式保存 full-access，必须落到 Kimi 的 yolo。
+        assert_eq!(
+            resolve_declared_mode("full-access", &kimi).as_deref(),
+            Some("yolo")
+        );
+
+        let codex = capabilities_with_modes(&[
+            ("read-only", "Read Only"),
+            ("auto", "Default"),
+            ("full-access", "Full Access"),
+        ]);
+        assert_eq!(
+            map_permission_mode(RoomPermissionMode::Plan, &codex).as_deref(),
+            Some("read-only")
+        );
+        assert_eq!(
+            map_permission_mode(RoomPermissionMode::Full, &codex).as_deref(),
+            Some("full-access")
+        );
+
+        let claude = capabilities_with_modes(&[
+            ("default", "Default"),
+            ("acceptEdits", "Accept Edits"),
+            ("plan", "Plan Mode"),
+            ("bypassPermissions", "Bypass Permissions"),
+        ]);
+        assert_eq!(
+            map_permission_mode(RoomPermissionMode::Auto, &claude).as_deref(),
+            Some("acceptEdits")
+        );
+        assert_eq!(
+            map_permission_mode(RoomPermissionMode::Full, &claude).as_deref(),
+            Some("bypassPermissions")
+        );
+        assert_eq!(
+            resolve_declared_mode("default", &claude).as_deref(),
+            Some("default")
+        );
+    }
+
+    #[test]
+    fn declared_model_aliases_qualified_values_and_display_names() {
+        let capabilities = AcpCapabilities {
+            models: vec![
+                AcpModelOption {
+                    value: "moon-7/deepseek-v4.1-flash".to_string(),
+                    name: "DeepSeek V4.1 Flash".to_string(),
+                },
+                AcpModelOption {
+                    value: "gpt-5.5".to_string(),
+                    name: "GPT-5.5".to_string(),
+                },
+            ],
+            ..AcpCapabilities::default()
+        };
+        assert_eq!(
+            resolve_declared_model("deepseek-v4.1-flash", &capabilities),
+            Some("moon-7/deepseek-v4.1-flash")
+        );
+        assert_eq!(
+            resolve_declared_model("DeepSeek V4.1 Flash", &capabilities),
+            Some("moon-7/deepseek-v4.1-flash")
+        );
+        assert_eq!(
+            resolve_declared_model("gpt-5.5", &capabilities),
+            Some("gpt-5.5")
+        );
+        assert_eq!(resolve_declared_model("unknown-model", &capabilities), None);
     }
 }

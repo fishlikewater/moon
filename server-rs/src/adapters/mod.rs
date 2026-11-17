@@ -2,6 +2,7 @@
 
 pub mod acp;
 pub mod acp_preflight;
+pub mod acp_provider;
 pub mod codex;
 pub mod codex_config;
 pub mod fake;

@@ -50,3 +50,24 @@ export function nextProviderSelection(providerId: string): {
 } {
   return { apiProviderId: providerId, model: "", reasoningLevel: "" };
 }
+
+/**
+ * 切换自定义 ACP agent 后清空下游选择。
+ *
+ * 模型、思考等级与会话模式都来自上一个 agent 的探测快照；保留旧值会让
+ * 运行时命中不了新 agent 的宣告值，退化成「未宣告」警告。供应商绑定
+ * 独立于具体 agent，由调用方展开当前表单保留。
+ */
+export function nextCustomHarnessSelection(value: string): {
+  customHarnessId: string;
+  model: string;
+  reasoningLevel: string;
+  sessionMode: string;
+} {
+  return {
+    customHarnessId: value,
+    model: "",
+    reasoningLevel: "",
+    sessionMode: "",
+  };
+}

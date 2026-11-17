@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ApiProvider } from "@moon/shared";
 import {
   findProviderById,
+  nextCustomHarnessSelection,
   nextProviderSelection,
   providerModelChoices,
   providerReasoningChoices,
@@ -74,6 +75,17 @@ describe("nextProviderSelection", () => {
       apiProviderId: "3",
       model: "",
       reasoningLevel: "",
+    });
+  });
+});
+
+describe("nextCustomHarnessSelection", () => {
+  it("切换 ACP agent 清空模型、思考等级与会话模式", () => {
+    expect(nextCustomHarnessSelection("4")).toEqual({
+      customHarnessId: "4",
+      model: "",
+      reasoningLevel: "",
+      sessionMode: "",
     });
   });
 });

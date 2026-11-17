@@ -20,6 +20,7 @@ import { api, errorMessage } from "../api/client";
 import { acpReasoningOption, acpSessionModes } from "../acpAgentCapabilities";
 import {
   findProviderById,
+  nextCustomHarnessSelection,
   nextProviderSelection,
   providerModelChoices,
   providerReasoningChoices,
@@ -490,7 +491,7 @@ export default function AgentsPage() {
       modelHints.push(
         count === 0
           ? `供应商「${selectedProvider?.name}」未配置模型；可手填模型 id，或回供应商编辑。`
-          : `模型候选来自供应商「${selectedProvider?.name}」（${count} 个）；启动时按协议注入供应商连接信息。`,
+          : `模型候选来自供应商「${selectedProvider?.name}」（${count} 个）；Kimi Code / Codex ACP / Claude Code ACP 会写入隔离配置并注册该模型，其他 ACP agent 仅注入连接信息。`,
       );
     }
     const capabilities = selectedCustomHarness?.capabilities ?? null;
@@ -617,7 +618,10 @@ export default function AgentsPage() {
   };
 
   const changeCustomHarness = (value: string): void => {
-    setForm((current) => ({ ...current, customHarnessId: value }));
+    setForm((current) => ({
+      ...current,
+      ...nextCustomHarnessSelection(value),
+    }));
   };
 
   // 切换/清空供应商：模型与思考等级随候选变化清空，会话模式（ACP 探测）保留。
@@ -1133,7 +1137,9 @@ export default function AgentsPage() {
                     </select>
                     <span className="field-hint">
                       绑定后启动智能体时按协议注入 Base URL / API
-                      Key；模型候选切换为供应商模型。
+                      Key；模型候选切换为供应商模型。Kimi Code / Codex ACP /
+                      Claude Code ACP 会写入隔离配置并注册该模型，其他 ACP
+                      agent 仅注入连接信息，模型需 agent 自身支持。
                     </span>
                     {providerOptions.length === 0 && (
                       <span className="field-hint">
