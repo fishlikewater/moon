@@ -143,6 +143,41 @@ function PanelIcon() {
   );
 }
 
+function PaperclipIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M21 11.5 12.5 20a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" />
+    </svg>
+  );
+}
+
+function ArrowUpIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M12 19V5" />
+      <path d="m5.5 11.5 6.5-6.5 6.5 6.5" />
+    </svg>
+  );
+}
+
 /** 消息附件：图片给缩略预览，其余给下载链接。 */
 function MessageAttachments({
   attachments,
@@ -778,15 +813,6 @@ export default function DirectChatPage() {
             </button>
           </div>
 
-          <header className="direct-head">
-            <AgentAvatar id={agent.id} name={agent.name} size="md" />
-            <div className="direct-head-body">
-              <div className="direct-head-title">
-                <h1>{agent.name}</h1>
-              </div>
-            </div>
-          </header>
-
       <div className="chat-shell">
         <div className="chat-panel">
           <div className="message-list" ref={listRef} onScroll={onListScroll}>
@@ -906,7 +932,7 @@ export default function DirectChatPage() {
                 onClick={() => attachmentInputRef.current?.click()}
                 disabled={sending}
               >
-                附件
+                <PaperclipIcon />
               </button>
               <textarea
                 value={draft}
@@ -928,7 +954,7 @@ export default function DirectChatPage() {
                   sending,
                 )}
               >
-                发送
+                <ArrowUpIcon />
               </button>
             </div>
             <div className="composer-actions">
