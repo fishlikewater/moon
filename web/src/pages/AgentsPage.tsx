@@ -25,10 +25,12 @@ import {
   providerReasoningChoices,
   resolveProviderOptions,
 } from "../components/agentFormProvider";
+import { AcpFormGuide } from "../components/AcpFormGuide";
 import { AgentAvatar } from "../components/AgentAvatar";
 import { EmptyState } from "../components/layout/EmptyState";
 import { ListSkeleton } from "../components/layout/ListSkeleton";
 import { PageHeader } from "../components/layout/PageHeader";
+import { resolveAcpFormAvailability } from "./agentAcpForm";
 import { shouldOpenNew, withoutNewParam } from "./newEntry";
 
 const HARNESS_OPTIONS: ReadonlyArray<{ value: HarnessKind; label: string }> = [
@@ -148,6 +150,10 @@ export default function AgentsPage() {
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [customHarnesses, setCustomHarnesses] = useState<CustomHarness[]>([]);
+  const [customHarnessesLoading, setCustomHarnessesLoading] = useState(true);
+  const [customHarnessesError, setCustomHarnessesError] = useState<
+    string | null
+  >(null);
   const [providers, setProviders] = useState<ApiProvider[]>([]);
   const modalRef = useRef<HTMLDivElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
@@ -191,9 +197,11 @@ export default function AgentsPage() {
   }, []);
 
   // 自定义 ACP agent 注册表用于 acp harness 的下拉；失败降级为空列表，
-  // 提交时由服务端校验兜底。
+  // 但必须把读取状态传给表单，否则接口错误会伪装成「注册表为空」。
   useEffect(() => {
     let cancelled = false;
+    setCustomHarnessesLoading(true);
+    setCustomHarnessesError(null);
     api.customHarnesses
       .list()
       .then((items) => {
@@ -201,9 +209,15 @@ export default function AgentsPage() {
           setCustomHarnesses(items);
         }
       })
-      .catch(() => {
+      .catch((cause) => {
         if (!cancelled) {
           setCustomHarnesses([]);
+          setCustomHarnessesError(errorMessage(cause));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setCustomHarnessesLoading(false);
         }
       });
     return () => {
@@ -329,6 +343,22 @@ export default function AgentsPage() {
       : customHarnesses.find(
           (item) => String(item.id) === form.customHarnessId,
         );
+
+  const acpFormAvailability = useMemo(
+    () =>
+      resolveAcpFormAvailability({
+        loading: customHarnessesLoading,
+        loadError: customHarnessesError,
+        items: customHarnesses,
+        selectedId: form.customHarnessId,
+      }),
+    [
+      customHarnesses,
+      customHarnessesError,
+      customHarnessesLoading,
+      form.customHarnessId,
+    ],
+  );
 
   // 供应商三级联动：仅启用供应商可作候选；绑定后模型候选来自供应商 models。
   const providerOptions = useMemo(
@@ -958,7 +988,7 @@ export default function AgentsPage() {
       {formOpen && (
         <div className="modal-layer">
           <div
-            className="modal-card"
+            className="modal-card agent-form-card"
             ref={modalRef}
             role="dialog"
             aria-modal="true"
@@ -984,13 +1014,16 @@ export default function AgentsPage() {
               </button>
             </header>
 
+            <form
+              id="agent-form"
+              className="form-stack agent-form-body"
+              onSubmit={submit}
+            >
             {error !== null && (
               <p className="banner error" role="alert">
                 {error}
               </p>
             )}
-
-            <form className="form-stack" onSubmit={submit}>
 
             {editingBuiltin && (
               <p className="field-hint">
@@ -1031,72 +1064,127 @@ export default function AgentsPage() {
             </label>
 
             {form.harness === "acp" && (
-              <label className="field">
-                <span className="field-label">自定义 ACP agent</span>
-                <select
-                  id="agent-custom-harness"
-                  value={form.customHarnessId}
-                  onChange={(event) => changeCustomHarness(event.target.value)}
-                  aria-label="选择自定义 ACP agent"
-                >
-                  <option value="">选择已注册的 ACP agent…</option>
-                  {customHarnesses.map((item) => (
-                    <option key={item.id} value={String(item.id)}>
-                      {item.name}（{item.command}）
-                    </option>
-                  ))}
-                </select>
-                {customHarnesses.length === 0 && (
-                  <span className="field-hint">
-                    注册表为空：请前往 <Link to="/harnesses">Harness 页面</Link>{" "}
-                    注册。
-                  </span>
-                )}
-              </label>
-            )}
+              <section
+                className="agent-form-acp form-span-2"
+                aria-labelledby="agent-acp-title"
+              >
+                <h3 className="agent-form-acp-title" id="agent-acp-title">
+                  ACP 配置
+                </h3>
+                <div className="form-grid">
+                  <label className="field form-span-2">
+                    <span className="field-label">自定义 ACP agent</span>
+                    <select
+                      id="agent-custom-harness"
+                      value={form.customHarnessId}
+                      onChange={(event) =>
+                        changeCustomHarness(event.target.value)
+                      }
+                      aria-label="选择自定义 ACP agent"
+                    >
+                      <option value="">选择已注册的 ACP agent…</option>
+                      {customHarnesses.map((item) => (
+                        <option key={item.id} value={String(item.id)}>
+                          {item.name}（{item.command}）
+                        </option>
+                      ))}
+                    </select>
+                  </label>
 
-            {form.harness === "acp" && (
-              <label className="field">
-                <span className="field-label">模型供应商（可选）</span>
-                <select
-                  id="agent-api-provider"
-                  value={
-                    form.apiProviderId !== "" &&
-                    findProviderById(providers, form.apiProviderId) === undefined
-                      ? CUSTOM_PROVIDER_VALUE
-                      : form.apiProviderId
-                  }
-                  onChange={(event) => changeApiProvider(event.target.value)}
-                  aria-label="选择模型供应商"
-                >
-                  <option value="">不绑定供应商…</option>
-                  {providerOptions.map((item) => (
-                    <option key={item.id} value={String(item.id)}>
-                      {item.name}（{item.protocol === "anthropic" ? "Anthropic 兼容" : "OpenAI 兼容"}）
-                    </option>
-                  ))}
-                  {selectedProvider !== undefined && !selectedProvider.enabled && (
-                    <option value={String(selectedProvider.id)} disabled>
-                      已停用：{selectedProvider.name}（运行会报错，请更换）
-                    </option>
-                  )}
-                  {form.apiProviderId !== "" &&
-                    findProviderById(providers, form.apiProviderId) === undefined && (
-                      <option value={CUSTOM_PROVIDER_VALUE}>
-                        原供应商已删除
-                      </option>
+                  <label className="field">
+                    <span className="field-label">模型供应商（可选）</span>
+                    <select
+                      id="agent-api-provider"
+                      value={
+                        form.apiProviderId !== "" &&
+                        findProviderById(providers, form.apiProviderId) ===
+                          undefined
+                          ? CUSTOM_PROVIDER_VALUE
+                          : form.apiProviderId
+                      }
+                      onChange={(event) =>
+                        changeApiProvider(event.target.value)
+                      }
+                      aria-label="选择模型供应商"
+                    >
+                      <option value="">不绑定供应商…</option>
+                      {providerOptions.map((item) => (
+                        <option key={item.id} value={String(item.id)}>
+                          {item.name}（
+                          {item.protocol === "anthropic"
+                            ? "Anthropic 兼容"
+                            : "OpenAI 兼容"}
+                          ）
+                        </option>
+                      ))}
+                      {selectedProvider !== undefined &&
+                        !selectedProvider.enabled && (
+                          <option value={String(selectedProvider.id)} disabled>
+                            已停用：{selectedProvider.name}（运行会报错，请更换）
+                          </option>
+                        )}
+                      {form.apiProviderId !== "" &&
+                        findProviderById(providers, form.apiProviderId) ===
+                          undefined && (
+                          <option value={CUSTOM_PROVIDER_VALUE}>
+                            原供应商已删除
+                          </option>
+                        )}
+                    </select>
+                    <span className="field-hint">
+                      绑定后启动智能体时按协议注入 Base URL / API
+                      Key；模型候选切换为供应商模型。
+                    </span>
+                    {providerOptions.length === 0 && (
+                      <span className="field-hint">
+                        没有启用的供应商：请前往{" "}
+                        <Link to="/models">模型页面</Link> 新建。
+                      </span>
                     )}
-                </select>
-                <span className="field-hint">
-                  绑定后启动智能体时按协议注入 Base URL / API Key；模型候选切换为供应商模型。
-                </span>
-                {providerOptions.length === 0 && (
-                  <span className="field-hint">
-                    没有启用的供应商：请前往 <Link to="/harnesses">Harness 页面</Link>{" "}
-                    新建。
-                  </span>
-                )}
-              </label>
+                  </label>
+
+                  <div className="field">
+                    <label className="field-label" htmlFor="agent-session-mode">
+                      会话模式
+                    </label>
+                    <select
+                      id="agent-session-mode"
+                      value={sessionModeSelectValue}
+                      onChange={(event) =>
+                        changeSessionMode(event.target.value)
+                      }
+                      disabled={!canChooseSessionMode}
+                      aria-describedby={
+                        sessionModeHintIds.length === 0
+                          ? undefined
+                          : sessionModeHintIds.join(" ")
+                      }
+                    >
+                      <option value="">跟随房间权限模式 / agent 默认</option>
+                      {isCustomSessionMode && (
+                        <option value={CUSTOM_SESSION_VALUE}>
+                          当前模式：{form.sessionMode}（不在列表中）
+                        </option>
+                      )}
+                      {acpModes.map((mode) => (
+                        <option key={mode.id} value={mode.id}>
+                          {mode.name}
+                        </option>
+                      ))}
+                    </select>
+                    {sessionModeHints.map((hint, index) => (
+                      <span
+                        key={sessionModeHintIds[index]}
+                        id={sessionModeHintIds[index]}
+                        className="field-hint"
+                      >
+                        {hint}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <AcpFormGuide availability={acpFormAvailability} />
+              </section>
             )}
 
             <label className="field form-span-2">
@@ -1183,46 +1271,6 @@ export default function AgentsPage() {
               ))}
             </div>
 
-            {form.harness === "acp" && (
-              <div className="field">
-                <label className="field-label" htmlFor="agent-session-mode">
-                  会话模式
-                </label>
-                <select
-                  id="agent-session-mode"
-                  value={sessionModeSelectValue}
-                  onChange={(event) => changeSessionMode(event.target.value)}
-                  disabled={!canChooseSessionMode}
-                  aria-describedby={
-                    sessionModeHintIds.length === 0
-                      ? undefined
-                      : sessionModeHintIds.join(" ")
-                  }
-                >
-                  <option value="">跟随房间权限模式 / agent 默认</option>
-                  {isCustomSessionMode && (
-                    <option value={CUSTOM_SESSION_VALUE}>
-                      当前模式：{form.sessionMode}（不在列表中）
-                    </option>
-                  )}
-                  {acpModes.map((mode) => (
-                    <option key={mode.id} value={mode.id}>
-                      {mode.name}
-                    </option>
-                  ))}
-                </select>
-                {sessionModeHints.map((hint, index) => (
-                  <span
-                    key={sessionModeHintIds[index]}
-                    id={sessionModeHintIds[index]}
-                    className="field-hint"
-                  >
-                    {hint}
-                  </span>
-                ))}
-              </div>
-            )}
-
             <div className="field">
               <label className="field-label" htmlFor="agent-reasoning">
                 思考等级
@@ -1283,9 +1331,15 @@ export default function AgentsPage() {
             </div>
 
             </div>
+            </form>
 
-            <div className="form-actions">
-              <button type="submit" className="btn btn-primary" disabled={saving}>
+            <div className="form-actions agent-form-footer">
+              <button
+                type="submit"
+                form="agent-form"
+                className="btn btn-primary"
+                disabled={saving}
+              >
                 {saving
                   ? "保存中…"
                   : form.editingId === null
@@ -1301,7 +1355,6 @@ export default function AgentsPage() {
                 取消
               </button>
             </div>
-            </form>
           </div>
         </div>
       )}

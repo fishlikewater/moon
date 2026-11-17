@@ -1245,6 +1245,91 @@ svg {
   padding-top: var(--space-1);
 }
 
+/* ===== 智能体表单：固定头尾 + 独立滚动字段区 ===== */
+/* ACP 分支字段更多；把滚动收进字段区，标题与创建/取消始终可见。
+   双类选择器压过文件后方的 .modal-card 默认值，且不改变其他弹层。 */
+.modal-card.agent-form-card {
+  gap: 0;
+  width: min(680px, 100%);
+  padding: 0;
+  overflow: hidden;
+}
+
+.modal-card.agent-form-card .modal-head {
+  flex: none;
+  padding: var(--space-6) var(--space-6) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.agent-form-body {
+  min-height: 0;
+  padding: var(--space-4) var(--space-6) var(--space-6);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.agent-form-footer {
+  flex: none;
+  padding: var(--space-4) var(--space-6);
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+
+/* ACP 专属字段分组：内部复用 .form-grid（桌面两列、窄屏单列）。 */
+.agent-form-acp {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.agent-form-acp-title {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 表单内 ACP 引导：状态说明 + 下一步入口，颜色随状态变化。 */
+.agent-form-guide {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  line-height: 1.55;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.agent-form-guide-link {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.agent-form-guide-warn {
+  color: var(--status-progress-fg);
+  background: var(--status-progress-bg);
+  border-color: color-mix(in srgb, var(--status-progress-fg) 35%, transparent);
+}
+
+.agent-form-guide-error {
+  color: var(--color-danger-strong);
+  background: var(--color-danger-soft);
+  border-color: var(--color-danger-border);
+}
+
+.agent-form-guide-ready {
+  color: var(--status-done-fg);
+  background: var(--status-done-bg);
+  border-color: color-mix(in srgb, var(--status-done-fg) 35%, transparent);
+}
+
 .harness-templates {
   display: flex;
   flex-direction: column;
