@@ -1140,6 +1140,8 @@ svg {
   display: grid;
   gap: 6px;
   min-width: 0;
+  /* 网格行被相邻较高字段拉伸时，内容保持自然高度，避免选择框被拉高下移。 */
+  align-content: start;
 }
 
 .field-label {
