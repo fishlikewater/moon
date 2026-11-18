@@ -20,7 +20,7 @@ use crate::domain::discussion::{
     DISCUSSION_TRANSCRIPT_LIMIT, MAX_DISCUSSION_PARTICIPANTS, MAX_DISCUSSION_ROUNDS,
     MIN_DISCUSSION_PARTICIPANTS,
 };
-use crate::domain::event::RoomEvent;
+use crate::domain::event::{RoomEvent, RoomState};
 use crate::domain::message::{
     DiscussionStance, DiscussionStopVote, Message, MessageDiscussion, MessageSenderType,
     MessageStatus,
@@ -836,9 +836,9 @@ impl DiscussionService {
     fn broadcast_changed(&self, discussion: &Discussion) {
         (self.broadcast)(
             discussion.room_id,
-            &RoomEvent::DiscussionChanged {
+            &RoomEvent::StateChanged {
                 room_id: discussion.room_id,
-                discussion: discussion.clone(),
+                state: RoomState::Discussion(discussion.clone()),
             },
         );
     }

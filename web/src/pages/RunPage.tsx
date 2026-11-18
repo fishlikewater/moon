@@ -91,6 +91,90 @@ export default function RunPage() {
     }
   }, [roomId]);
 
+  const handleEvent = useCallback(
+    (event: RoomEvent) => {
+      if (!isEventForRoom(event, roomId)) {
+        return;
+      }
+      if (event.type === "run_activity") {
+        const activity = event.activity;
+        setActivitiesByRun((previous) => {
+          const list = previous[activity.runId] ?? [];
+          if (list.some((item) => item.seq === activity.seq)) {
+            return previous;
+          }
+          return {
+            ...previous,
+            [activity.runId]: [...list, activity].slice(-ACTIVITY_LIMIT),
+          };
+        });
+        return;
+      }
+      if (event.type === "message_started") {
+        setMessagesByRun((previous) => ({
+          ...previous,
+          [event.runId]: mergeRunMessage(
+            previous[event.runId] ?? [],
+            event.message,
+          ),
+        }));
+        return;
+      }
+      if (event.type === "message_delta") {
+        setMessagesByRun((previous) => {
+          let changed = false;
+          const next: Record<number, Message[]> = { ...previous };
+          for (const [runId, list] of Object.entries(previous)) {
+            if (!list.some((message) => message.id === event.messageId)) {
+              continue;
+            }
+            changed = true;
+            next[Number(runId)] = list.map((message) =>
+              message.id === event.messageId
+                ? { ...message, content: message.content + event.text }
+                : message,
+            );
+          }
+          return changed ? next : previous;
+        });
+        return;
+      }
+      if (event.type === "message_final") {
+        if (event.message.runId !== null) {
+          const runId = event.message.runId;
+          setMessagesByRun((previous) => ({
+            ...previous,
+            [runId]: mergeRunMessage(previous[runId] ?? [], event.message),
+          }));
+        }
+        void reloadRuns();
+        return;
+      }
+      // 运行列表的状态与输出由服务端事实决定：有开始就重新拉取。
+      if (event.type === "run_started") {
+        // 首个占位消息没有 message_started，先合并才能接收后续 delta。
+        setMessagesByRun((previous) => ({
+          ...previous,
+          [event.runId]: mergeRunMessage(
+            previous[event.runId] ?? [],
+            event.message,
+          ),
+        }));
+        void reloadRuns();
+      }
+    },
+    [reloadRuns, roomId],
+  );
+
+  // 实时链路要求重同步时，服务端快照是唯一可信来源：重拉列表与当前运行详情。
+  const { connected, resyncToken } = useRoomEvents(roomId, handleEvent);
+  useEffect(() => {
+    if (resyncToken === 0) {
+      return;
+    }
+    void reloadRuns();
+  }, [resyncToken, reloadRuns]);
+
   useEffect(() => {
     if (roomId === null) {
       setListLoading(false);
@@ -169,84 +253,7 @@ export default function RunPage() {
     return () => {
       cancelled = true;
     };
-  }, [roomId, urlRunId]);
-
-  const handleEvent = useCallback(
-    (event: RoomEvent) => {
-      if (!isEventForRoom(event, roomId)) {
-        return;
-      }
-      if (event.type === "run_activity") {
-        const activity = event.activity;
-        setActivitiesByRun((previous) => {
-          const list = previous[activity.runId] ?? [];
-          if (list.some((item) => item.seq === activity.seq)) {
-            return previous;
-          }
-          return {
-            ...previous,
-            [activity.runId]: [...list, activity].slice(-ACTIVITY_LIMIT),
-          };
-        });
-        return;
-      }
-      if (event.type === "message_started") {
-        setMessagesByRun((previous) => ({
-          ...previous,
-          [event.runId]: mergeRunMessage(
-            previous[event.runId] ?? [],
-            event.message,
-          ),
-        }));
-        return;
-      }
-      if (event.type === "message_delta") {
-        setMessagesByRun((previous) => {
-          let changed = false;
-          const next: Record<number, Message[]> = { ...previous };
-          for (const [runId, list] of Object.entries(previous)) {
-            if (!list.some((message) => message.id === event.messageId)) {
-              continue;
-            }
-            changed = true;
-            next[Number(runId)] = list.map((message) =>
-              message.id === event.messageId
-                ? { ...message, content: message.content + event.text }
-                : message,
-            );
-          }
-          return changed ? next : previous;
-        });
-        return;
-      }
-      if (event.type === "message_final") {
-        if (event.message.runId !== null) {
-          const runId = event.message.runId;
-          setMessagesByRun((previous) => ({
-            ...previous,
-            [runId]: mergeRunMessage(previous[runId] ?? [], event.message),
-          }));
-        }
-        void reloadRuns();
-        return;
-      }
-      // 运行列表的状态与输出由服务端事实决定：有开始就重新拉取。
-      if (event.type === "run_started") {
-        // 首个占位消息没有 message_started，先合并才能接收后续 delta。
-        setMessagesByRun((previous) => ({
-          ...previous,
-          [event.runId]: mergeRunMessage(
-            previous[event.runId] ?? [],
-            event.message,
-          ),
-        }));
-        void reloadRuns();
-      }
-    },
-    [reloadRuns, roomId],
-  );
-
-  const { connected } = useRoomEvents(roomId, handleEvent);
+  }, [roomId, urlRunId, resyncToken]);
 
   const hasRunning =
     runs.some((run) => run.status === "running") ||

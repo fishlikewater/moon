@@ -357,12 +357,15 @@ async fn reviews_completed_round_and_continues_to_next() {
         events.push(serde_json::from_str::<Value>(text.as_str()).unwrap());
     }
     assert!(events.iter().any(|event| {
-        event["type"] == "collaboration_changed" && event["batch"]["status"] == "running"
+        event["type"] == "state_changed"
+            && event["state"]["unit"] == "collaboration"
+            && event["state"]["snapshot"]["status"] == "running"
     }));
     assert!(events.iter().any(|event| {
-        event["type"] == "collaboration_changed"
-            && event["batch"]["status"] == "completed"
-            && event["batch"]["currentRound"] == 2
+        event["type"] == "state_changed"
+            && event["state"]["unit"] == "collaboration"
+            && event["state"]["snapshot"]["status"] == "completed"
+            && event["state"]["snapshot"]["currentRound"] == 2
     }));
     server.abort();
 }

@@ -387,12 +387,15 @@ async fn starts_from_chat_strips_protocol_and_completes_on_all_stop() {
         events.push(serde_json::from_str::<Value>(text.as_str()).unwrap());
     }
     assert!(events.iter().any(|event| {
-        event["type"] == "discussion_changed" && event["discussion"]["status"] == "running"
+        event["type"] == "state_changed"
+            && event["state"]["unit"] == "discussion"
+            && event["state"]["snapshot"]["status"] == "running"
     }));
     assert!(events.iter().any(|event| {
-        event["type"] == "discussion_changed"
-            && event["discussion"]["status"] == "completed"
-            && event["discussion"]["stopReason"] == "all_voted_stop"
+        event["type"] == "state_changed"
+            && event["state"]["unit"] == "discussion"
+            && event["state"]["snapshot"]["status"] == "completed"
+            && event["state"]["snapshot"]["stopReason"] == "all_voted_stop"
     }));
     server.abort();
 }

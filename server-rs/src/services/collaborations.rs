@@ -176,9 +176,9 @@ impl CollaborationService {
     pub fn broadcast_batch(&self, batch: &CollaborationBatch) {
         (self.broadcast)(
             batch.room_id,
-            &crate::domain::event::RoomEvent::CollaborationChanged {
+            &crate::domain::event::RoomEvent::StateChanged {
                 room_id: batch.room_id,
-                batch: batch.clone(),
+                state: crate::domain::event::RoomState::Collaboration(batch.clone()),
             },
         );
     }

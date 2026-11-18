@@ -929,6 +929,33 @@ export default function RoomPage() {
   const pendingAttachmentsRef = useRef<PendingAttachment[]>([]);
   const reactionBusyRef = useRef<number | null>(null);
 
+  // 重同步后只重拉讨论/委派快照，避免整页 loading 闪烁；两者都按 updatedAt 单调接受。
+  const refreshRoomState = useCallback(async () => {
+    if (roomId === null) {
+      return;
+    }
+    try {
+      const [latestDiscussion, latestCollaboration] = await Promise.all([
+        api.discussions.latest(roomId),
+        api.collaborations.latest(roomId),
+      ]);
+      setDiscussion((previous) =>
+        latestDiscussion === null ||
+        (previous !== null && latestDiscussion.updatedAt < previous.updatedAt)
+          ? previous
+          : latestDiscussion,
+      );
+      setCollaboration((previous) =>
+        latestCollaboration === null ||
+        (previous !== null && latestCollaboration.updatedAt < previous.updatedAt)
+          ? previous
+          : latestCollaboration,
+      );
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  }, [roomId]);
+
   // 聊天状态机（消息/运行/实时事件）由 hook 承担；讨论与委派快照仍由本页持有。
   const {
     messages,
@@ -956,14 +983,28 @@ export default function RoomPage() {
     mergeMessage,
     reloadMessages,
   } = useRoomChat(roomId, {
-    onDiscussion: setDiscussion,
-    // 委派快照按 updatedAt 丢弃迟到广播，与初始加载保持同一规则。
-    onCollaboration: (batch) =>
-      setCollaboration((previous) =>
-        previous === null || batch.updatedAt >= previous.updatedAt
-          ? batch
-          : previous,
-      ),
+    // 讨论/委派快照按 updatedAt 丢弃迟到广播，与重拉保持同一规则。
+    // task 快照由任务页消费，房间页不保留副本。
+    onState: (state) => {
+      if (state.unit === "discussion") {
+        const discussion = state.snapshot;
+        setDiscussion((previous) =>
+          previous === null || discussion.updatedAt >= previous.updatedAt
+            ? discussion
+            : previous,
+        );
+        return;
+      }
+      if (state.unit === "collaboration") {
+        const collaboration = state.snapshot;
+        setCollaboration((previous) =>
+          previous === null || collaboration.updatedAt >= previous.updatedAt
+            ? collaboration
+            : previous,
+        );
+      }
+    },
+    onResync: refreshRoomState,
     onError: setError,
   });
 

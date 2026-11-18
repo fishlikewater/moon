@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::db::Db;
-use crate::domain::event::RoomEvent;
+use crate::domain::event::{RoomEvent, RoomState};
 use crate::domain::message::{
     CollaborationMessageRole, Message, MessageCollaboration, MessageDiscussion, MessageKind,
     MessageSenderType, MessageStatus,
@@ -54,7 +54,6 @@ struct InterruptedCollaboration {
 struct BlockedTask {
     task_id: i64,
     room_id: i64,
-    status: TaskStatus,
     message: Message,
 }
 
@@ -158,7 +157,6 @@ pub async fn recover_interrupted(
         blocked.push(BlockedTask {
             task_id,
             room_id,
-            status: TaskStatus::Blocked,
             message: Message {
                 id: result.last_insert_rowid(),
                 room_id,
@@ -338,9 +336,9 @@ pub async fn recover_interrupted(
                 if let Ok(Some(batch)) = collaborations_store.get_by_id(entry.batch_id).await {
                     broadcast(
                         entry.room_id,
-                        &RoomEvent::CollaborationChanged {
+                        &RoomEvent::StateChanged {
                             room_id: entry.room_id,
-                            batch,
+                            state: RoomState::Collaboration(batch),
                         },
                     );
                 }
@@ -360,9 +358,9 @@ pub async fn recover_interrupted(
                 {
                     broadcast(
                         entry.room_id,
-                        &RoomEvent::DiscussionChanged {
+                        &RoomEvent::StateChanged {
                             room_id: entry.room_id,
-                            discussion,
+                            state: RoomState::Discussion(discussion),
                         },
                     );
                 }
@@ -376,15 +374,18 @@ pub async fn recover_interrupted(
             }
         }
         // 事务提交后再广播，保证订阅方看到的都是已落库状态。
+        let tasks_store = crate::store::TaskStore::new(db.clone());
         for entry in &blocked {
-            broadcast(
-                entry.room_id,
-                &RoomEvent::TaskChanged {
-                    room_id: entry.room_id,
-                    task_id: entry.task_id,
-                    status: entry.status,
-                },
-            );
+            // 快照必须是完整领域对象：半量 delta 在补发/重同步后无法自愈。
+            if let Ok(Some(task)) = tasks_store.get_by_id(entry.task_id).await {
+                broadcast(
+                    entry.room_id,
+                    &RoomEvent::StateChanged {
+                        room_id: entry.room_id,
+                        state: RoomState::Task(task),
+                    },
+                );
+            }
             broadcast(
                 entry.room_id,
                 &RoomEvent::MessageFinal {

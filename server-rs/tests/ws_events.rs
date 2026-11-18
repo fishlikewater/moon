@@ -6,6 +6,7 @@ use common::{create_agent, create_room, post, setup_with_adapter};
 use futures_util::StreamExt;
 use moon_server::adapters::{AdapterFactory, EventStream, HarnessAdapter};
 use moon_server::domain::agent::{Agent, HarnessKind};
+use moon_server::domain::event::RoomEvent;
 use moon_server::domain::run_event::{RunEvent, RunInput};
 use moon_server::error::AppError;
 use moon_server::{build_app, AppState};
@@ -45,6 +46,29 @@ async fn start_server(state: AppState) -> (String, tokio::task::JoinHandle<()>) 
         let _ = axum::serve(listener, build_app(state)).await;
     });
     (format!("127.0.0.1:{}", address.port()), handle)
+}
+
+/// 收集最多 `count` 个文本帧；超时或无更多帧时返回已收到的部分。
+async fn collect_frames<S>(socket: &mut S, count: usize) -> Vec<Value>
+where
+    S: futures_util::Stream<
+            Item = Result<Message, tokio_tungstenite::tungstenite::Error>,
+        > + Unpin,
+{
+    let mut frames = Vec::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while frames.len() < count && tokio::time::Instant::now() < deadline {
+        let incoming = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            socket.next(),
+        )
+        .await;
+        let Some(Ok(Message::Text(text))) = incoming.ok().flatten() else {
+            continue;
+        };
+        frames.push(serde_json::from_str(text.as_str()).unwrap());
+    }
+    frames
 }
 
 #[tokio::test]
@@ -222,7 +246,7 @@ async fn ws_failure_still_broadcasts_final_and_system_message() {
 }
 
 #[tokio::test]
-async fn ws_broadcasts_task_changed_and_history_cleared() {
+async fn ws_broadcasts_state_changed_and_history_cleared() {
     let app = setup_with_adapter(None).await;
     let agent = create_agent(&app, "看板成员").await;
     let agent_id = agent["id"].as_i64().unwrap();
@@ -270,10 +294,10 @@ async fn ws_broadcasts_task_changed_and_history_cleared() {
     )
     .await;
 
-    let mut task_changed = None;
+    let mut state_changed = None;
     let mut history_cleared = false;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    while tokio::time::Instant::now() < deadline && (task_changed.is_none() || !history_cleared)
+    while tokio::time::Instant::now() < deadline && (state_changed.is_none() || !history_cleared)
     {
         let incoming = tokio::time::timeout(
             std::time::Duration::from_millis(500),
@@ -284,18 +308,20 @@ async fn ws_broadcasts_task_changed_and_history_cleared() {
             continue;
         };
         let event: Value = serde_json::from_str(text.as_str()).unwrap();
-        if event["type"] == "task_changed" {
-            task_changed = Some(event);
+        if event["type"] == "state_changed" && event["state"]["unit"] == "task" {
+            state_changed = Some(event);
         } else if event["type"] == "history_cleared" {
             assert_eq!(event["roomId"], room_id);
             history_cleared = true;
         }
     }
 
-    let task_changed = task_changed.expect("应广播 task_changed");
-    assert_eq!(task_changed["roomId"], room_id);
-    assert_eq!(task_changed["taskId"], task_id);
-    assert_eq!(task_changed["status"], "in_progress");
+    let state_changed = state_changed.expect("应广播 state_changed");
+    assert_eq!(state_changed["roomId"], room_id);
+    // 快照必须是完整任务对象：半量 delta 无法在重放/重同步后自愈。
+    assert_eq!(state_changed["state"]["snapshot"]["id"], task_id);
+    assert_eq!(state_changed["state"]["snapshot"]["status"], "in_progress");
+    assert_eq!(state_changed["state"]["snapshot"]["title"], "看板任务");
     assert!(history_cleared, "应广播 history_cleared");
     server.abort();
 }
@@ -334,5 +360,202 @@ async fn ws_is_room_scoped() {
     )
     .await;
     assert!(incoming.is_err(), "其他房间不应收到事件");
+    server.abort();
+}
+
+#[tokio::test]
+async fn ws_event_frames_carry_monotonic_seq() {
+    let app = setup_with_adapter(None).await;
+    let agent = create_agent(&app, "序号成员").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "序号房间", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+
+    let (address, server) = start_server(app.state.clone()).await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{address}/ws?roomId={room_id}"
+    ))
+    .await
+    .expect("connect ws");
+
+    // 升级完成到订阅注册之间有窗口，先等订阅就绪再广播。
+    for _ in 0..100 {
+        if app.state.ws_hub.subscriber_count(room_id) == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    for _ in 0..3 {
+        app.state
+            .ws_hub
+            .broadcast(room_id, &RoomEvent::HistoryCleared { room_id });
+    }
+
+    let frames = collect_frames(&mut socket, 3).await;
+    let seqs: Vec<u64> = frames
+        .iter()
+        .map(|frame| frame["seq"].as_u64().expect("帧必须带 seq"))
+        .collect();
+    assert_eq!(seqs, vec![1, 2, 3]);
+    assert!(frames.iter().all(|frame| frame["type"] == "history_cleared"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn ws_replays_events_after_seq() {
+    let app = setup_with_adapter(None).await;
+    let agent = create_agent(&app, "补发成员").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "补发房间", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+
+    for _ in 0..3 {
+        app.state
+            .ws_hub
+            .broadcast(room_id, &RoomEvent::HistoryCleared { room_id });
+    }
+
+    let (address, server) = start_server(app.state.clone()).await;
+    let epoch = app.state.ws_hub.epoch();
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{address}/ws?roomId={room_id}&afterEpoch={epoch}&afterSeq=1"
+    ))
+    .await
+    .expect("connect ws");
+
+    let frames = collect_frames(&mut socket, 2).await;
+    let seqs: Vec<u64> = frames
+        .iter()
+        .map(|frame| frame["seq"].as_u64().expect("帧必须带 seq"))
+        .collect();
+    assert_eq!(seqs, vec![2, 3]);
+
+    // 补发以水位为界：seq 1 不应再次出现。
+    let extra = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        socket.next(),
+    )
+    .await;
+    assert!(extra.is_err(), "补发不应重复发送已确认的帧");
+    server.abort();
+}
+
+#[tokio::test]
+async fn ws_requests_resync_when_replay_window_missed() {
+    let app = setup_with_adapter(None).await;
+    let agent = create_agent(&app, "重同步成员").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "重同步房间", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+
+    // 超过 1024 条回放窗口后，最早的事件已被丢弃。
+    for _ in 0..1100 {
+        app.state
+            .ws_hub
+            .broadcast(room_id, &RoomEvent::HistoryCleared { room_id });
+    }
+
+    let (address, server) = start_server(app.state.clone()).await;
+    let epoch = app.state.ws_hub.epoch();
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{address}/ws?roomId={room_id}&afterEpoch={epoch}&afterSeq=1"
+    ))
+    .await
+    .expect("connect ws");
+
+    let frames = collect_frames(&mut socket, 1).await;
+    let frame = frames.first().expect("应收到重同步信号");
+    assert_eq!(frame["type"], "resync_required");
+    assert_eq!(frame["roomId"], room_id);
+    assert!(frame.get("seq").is_none(), "重同步信号不属于事件流");
+
+    let extra = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        socket.next(),
+    )
+    .await;
+    assert!(extra.is_err(), "超窗时不应补发部分历史");
+    server.abort();
+}
+
+#[tokio::test]
+async fn ws_does_not_replay_without_after_seq() {
+    let app = setup_with_adapter(None).await;
+    let agent = create_agent(&app, "首连成员").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "首连房间", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+
+    app.state
+        .ws_hub
+        .broadcast(room_id, &RoomEvent::HistoryCleared { room_id });
+    app.state
+        .ws_hub
+        .broadcast(room_id, &RoomEvent::HistoryCleared { room_id });
+
+    let (address, server) = start_server(app.state.clone()).await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{address}/ws?roomId={room_id}"
+    ))
+    .await
+    .expect("connect ws");
+
+    let incoming = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        socket.next(),
+    )
+    .await;
+    assert!(incoming.is_err(), "首次连接不应补发历史事件");
+    server.abort();
+}
+
+#[tokio::test]
+async fn ws_requests_resync_when_epoch_differs() {
+    let app = setup_with_adapter(None).await;
+    let agent = create_agent(&app, "重启成员").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "重启房间", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+
+    app.state
+        .ws_hub
+        .broadcast(room_id, &RoomEvent::HistoryCleared { room_id });
+
+    let (address, server) = start_server(app.state.clone()).await;
+    // 水位序号与服务端一致，但 epoch 来自上一个进程：必须重新同步。
+    let stale_epoch = app.state.ws_hub.epoch() + 1;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{address}/ws?roomId={room_id}&afterEpoch={stale_epoch}&afterSeq=1"
+    ))
+    .await
+    .expect("connect ws");
+
+    let frames = collect_frames(&mut socket, 1).await;
+    let frame = frames.first().expect("应收到重同步信号");
+    assert_eq!(frame["type"], "resync_required");
+    assert_eq!(frame["roomId"], room_id);
+    server.abort();
+}
+
+#[tokio::test]
+async fn ws_rejects_invalid_after_seq() {
+    let app = setup_with_adapter(None).await;
+    let (address, server) = start_server(app.state.clone()).await;
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{address}/ws?roomId=1&afterSeq=abc"
+    ))
+    .await
+    .expect("connect ws");
+    let frame = socket.next().await.expect("close frame").unwrap();
+    match frame {
+        Message::Close(Some(close)) => {
+            assert_eq!(u16::from(close.code), 1008);
+            assert!(close.reason.as_str().contains("afterSeq"));
+        }
+        other => panic!("expected close frame, got {other:?}"),
+    }
+
     server.abort();
 }

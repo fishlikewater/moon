@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::domain::event::RoomEvent;
+use crate::domain::event::{RoomEvent, RoomState};
 use crate::domain::task::{Task, TaskPlan, TaskPriority, TaskStatus};
 use crate::error::{AppError, AppResult};
 use crate::services::chat::BroadcastFn;
@@ -178,10 +178,9 @@ impl TaskService {
                 // 事务已提交，看板收到的事件与落库状态一致。
                 (self.broadcast)(
                     task.room_id,
-                    &RoomEvent::TaskChanged {
+                    &RoomEvent::StateChanged {
                         room_id: task.room_id,
-                        task_id: task.id,
-                        status: task.status,
+                        state: RoomState::Task(task.clone()),
                     },
                 );
                 Ok(task)
@@ -231,10 +230,9 @@ impl TaskService {
         if changed {
             (self.broadcast)(
                 updated.room_id,
-                &RoomEvent::TaskChanged {
+                &RoomEvent::StateChanged {
                     room_id: updated.room_id,
-                    task_id: updated.id,
-                    status: updated.status,
+                    state: RoomState::Task(updated.clone()),
                 },
             );
         }

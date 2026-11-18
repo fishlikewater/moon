@@ -573,6 +573,17 @@ export const DEFAULT_COLLABORATION_MAX_ROUNDS = 3;
 export const MAX_COLLABORATION_ASSIGNMENTS = 5;
 
 /**
+ * 房间状态快照单元：`unit` 决定领域对象类型，客户端据此分派。
+ *
+ * `snapshot` 始终是完整领域对象；客户端按 `updatedAt` 单调接受，
+ * 避免补发或重拉后迟到的旧快照覆盖新值。
+ */
+export type RoomState =
+  | { unit: "task"; snapshot: Task }
+  | { unit: "discussion"; snapshot: Discussion }
+  | { unit: "collaboration"; snapshot: CollaborationBatch };
+
+/**
  * 房间实时事件（WebSocket `/ws?roomId=<id>` 推送）。
  *
  * 前后端唯一契约来源；服务端只向订阅了该房间的连接广播。
@@ -617,23 +628,15 @@ export type RoomEvent =
       reactions: MessageReaction[];
     }
   | {
-      /** 任务状态已在事务内提交；客户端据此实时更新看板 */
-      type: "task_changed";
+      /**
+       * 房间状态快照已提交；客户端按 `state.unit` 分派并整份替换本地快照。
+       *
+       * 快照一律是完整领域对象（不是半量 delta），断线补发与重同步后
+       * 客户端都能靠单条事件自愈。
+       */
+      type: "state_changed";
       roomId: number;
-      taskId: number;
-      status: TaskStatus;
-    }
-  | {
-      /** 讨论创建、轮次推进或结束时推送最新快照 */
-      type: "discussion_changed";
-      roomId: number;
-      discussion: Discussion;
-    }
-  | {
-      /** 委派批次创建、轮次推进、停止或结束时推送最新快照 */
-      type: "collaboration_changed";
-      roomId: number;
-      batch: CollaborationBatch;
+      state: RoomState;
     }
   | {
       /** 运行期间产生一条可展示活动；客户端按 runId + seq 追加 */
@@ -646,6 +649,24 @@ export type RoomEvent =
       type: "history_cleared";
       roomId: number;
     };
+
+/** 客户端持有的实时水位：`seq` 只在同一个 `epoch`（服务端进程）内可比。 */
+export interface RoomWatermark {
+  epoch: number;
+  seq: number;
+}
+
+/** 领域事件帧：`epoch`/`seq` 与事件字段平铺在同一个 JSON 对象里。 */
+export type RoomEventFrame = RoomEvent & { epoch: number; seq: number };
+
+/**
+ * 服务端无法按水位补齐时的重同步信号：水位来自上一个服务端进程，
+ * 或已早于回放窗口。不属于领域事件，因此不带 `epoch`/`seq`。
+ */
+export interface ResyncRequiredFrame {
+  type: "resync_required";
+  roomId: number;
+}
 
 export interface MessageCleanupResult {
   /** 实际删除的消息条数 */
