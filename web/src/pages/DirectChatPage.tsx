@@ -554,6 +554,15 @@ export default function DirectChatPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  // 清屏统计只做短暂反馈；再次清屏会写入新提示并重置计时。
+  useEffect(() => {
+    if (clearNotice === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => setClearNotice(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [clearNotice]);
+
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentKeyRef = useRef(0);
   const sideToggleRef = useRef<HTMLButtonElement | null>(null);

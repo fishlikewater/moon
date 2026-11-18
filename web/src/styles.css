@@ -7544,6 +7544,29 @@ details.run-activity-detail pre {
 
 .msg-run {
   margin-top: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms var(--ease);
+}
+
+/* 悬停消息或键盘聚焦时露出运行详情入口；触屏设备保持常显。 */
+.msg:hover .msg-run,
+.msg:focus-within .msg-run {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .msg-run {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-run {
+    transition: none;
+  }
 }
 
 /* ===== 直聊跳板页 ===== */
