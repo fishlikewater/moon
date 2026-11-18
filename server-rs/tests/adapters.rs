@@ -437,6 +437,7 @@ process.stdin.on('end', () => {
     .unwrap();
 
     let storage = workspace.path().join("codex-session");
+    let system_prompt = "你是「助手」。\n人设：简洁。";
     let input = RunInput {
         prompt: "请处理这个任务".to_string(),
         workspace_dir: workspace.path().to_string_lossy().into_owned(),
@@ -454,8 +455,8 @@ process.stdin.on('end', () => {
         }),
         permission_mode: Some(RoomPermissionMode::Auto),
         timeout: None,
-        system_prompt: None,
-        system_prompt_delivered: false,
+        system_prompt: Some(system_prompt.to_string()),
+        system_prompt_delivered: true,
     };
 
     let adapter = CodexAdapter;
@@ -482,9 +483,22 @@ process.stdin.on('end', () => {
     assert!(args.windows(2).any(|pair| pair == ["-c", "sandbox_mode=\"workspace-write\""]));
     assert!(args.windows(2).any(|pair| pair == ["-c", "approval_policy=\"never\""]));
     assert!(args.windows(2).any(|pair| pair == ["-m", "glm-4.6"]));
+    let developer_instructions = format!(
+        "developer_instructions={}",
+        serde_json::to_string(system_prompt).unwrap()
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["-c", developer_instructions.as_str()]),
+        "system prompt 应通过 developer_instructions 进入子进程参数：{args:?}"
+    );
     assert!(!args.contains(&"-s"), "resume 不能使用 -s");
     assert!(!args.contains(&"--ephemeral"), "复用会话不能 ephemeral");
     assert_eq!(invocation["stdin"].as_str().unwrap(), "请处理这个任务");
+    assert!(
+        !invocation["stdin"].as_str().unwrap().contains("人设："),
+        "原生通道不应把 system prompt 拼进 stdin"
+    );
 
     let home = PathBuf::from(invocation["codexHome"].as_str().unwrap());
     assert_eq!(home, storage.join("codex-home"));
@@ -638,6 +652,173 @@ process.stdin.on('data', (chunk) => {
     assert_eq!(
         invocation["preferences"]["nativeSearchEnhancementsEnabled"],
         false
+    );
+}
+
+#[tokio::test]
+async fn zcode_app_server_delivers_system_prompt_once() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let script = workspace.path().join("fake-app-server-system-prompt.js");
+    std::fs::write(
+        &script,
+        r#"
+const fs = require('fs');
+const path = require('path');
+let buffer = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  buffer += chunk;
+  let index;
+  while ((index = buffer.indexOf('\n')) >= 0) {
+    const line = buffer.slice(0, index);
+    buffer = buffer.slice(index + 1);
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    fs.appendFileSync(
+      path.join(__dirname, 'requests.jsonl'),
+      JSON.stringify({ method: message.method, params: message.params }) + '\n',
+      'utf8'
+    );
+    if (message.method === 'session/create') {
+      process.stdout.write(JSON.stringify({
+        id: message.id,
+        result: { session: { sessionId: 'sess-z1' } },
+      }) + '\n');
+    } else if (message.method === 'session/resume') {
+      if (message.params?.sessionId === 'gone') {
+        process.stdout.write(JSON.stringify({
+          id: message.id,
+          error: { code: -32004, message: 'Session not found' },
+        }) + '\n');
+      } else {
+        process.stdout.write(JSON.stringify({
+          id: message.id,
+          result: { session: { sessionId: message.params.sessionId } },
+        }) + '\n');
+      }
+    } else if (message.method === 'session/subscribe') {
+      process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\n');
+    } else if (message.method === 'session/send') {
+      process.stdout.write(JSON.stringify({
+        id: message.id,
+        result: { accepted: true },
+      }) + '\n');
+      process.stdout.write(JSON.stringify({
+        method: 'session/event',
+        params: {
+          sessionId: 'sess-z1',
+          type: 'turn.completed',
+          payload: { response: 'ok' },
+        },
+      }) + '\n');
+    } else if (message.method) {
+      process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\n');
+    }
+  }
+});
+"#,
+    )
+    .unwrap();
+
+    async fn run_once(adapter: &ZcodeAdapter, input: RunInput) -> Vec<RunEvent> {
+        let mut stream = adapter.run(input);
+        let mut events = Vec::new();
+        while let Some(item) = stream.next().await {
+            events.push(item.expect("zcode app-server event"));
+        }
+        events
+    }
+
+    let storage_dir = workspace.path().join("session-storage");
+    std::fs::create_dir_all(&storage_dir).unwrap();
+    let system_prompt = "你是房间「测试」中的智能体「助手」。\n人设：简洁。";
+    let build_input = |session: Option<RunSessionContext>, delivered: bool| RunInput {
+        prompt: "请回复".to_string(),
+        workspace_dir: workspace.path().to_string_lossy().into_owned(),
+        additional_directories: Vec::new(),
+        config: model_config(json!({ "zcodeBin": script.to_string_lossy() })),
+        session,
+        permission_mode: None,
+        timeout: None,
+        system_prompt: Some(system_prompt.to_string()),
+        system_prompt_delivered: delivered,
+    };
+
+    // 新建会话：system prompt 必须前置到本轮 prompt。
+    let first = run_once(&ZcodeAdapter, build_input(None, false)).await;
+    assert!(matches!(first.first(), Some(RunEvent::Session(id)) if id == "sess-z1"));
+
+    // 恢复成功且已投递：不再重复前置。
+    let second = run_once(
+        &ZcodeAdapter,
+        build_input(
+            Some(RunSessionContext {
+                harness_session_id: Some("sess-z1".to_string()),
+                storage_dir: storage_dir.to_string_lossy().to_string(),
+                last_context_message_id: 0,
+                system_prompt_hash: Some("same-hash".to_string()),
+            }),
+            true,
+        ),
+    )
+    .await;
+    assert!(matches!(second.first(), Some(RunEvent::Session(id)) if id == "sess-z1"));
+
+    // 恢复失败回退新建：即使 delivered=true 也必须重新前置。
+    let third = run_once(
+        &ZcodeAdapter,
+        build_input(
+            Some(RunSessionContext {
+                harness_session_id: Some("gone".to_string()),
+                storage_dir: storage_dir.to_string_lossy().to_string(),
+                last_context_message_id: 0,
+                system_prompt_hash: Some("same-hash".to_string()),
+            }),
+            true,
+        ),
+    )
+    .await;
+    assert!(matches!(third.first(), Some(RunEvent::Session(id)) if id == "sess-z1"));
+
+    let recorded = std::fs::read_to_string(workspace.path().join("requests.jsonl")).unwrap();
+    let requests: Vec<Value> = recorded
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let contents: Vec<String> = requests
+        .iter()
+        .filter(|request| request["method"] == "session/send")
+        .map(|request| request["params"]["content"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        contents,
+        vec![
+            format!("{system_prompt}\n\n请回复"),
+            "请回复".to_string(),
+            format!("{system_prompt}\n\n请回复"),
+        ]
+    );
+    let methods: Vec<&str> = requests
+        .iter()
+        .filter_map(|request| request["method"].as_str())
+        .collect();
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| **method == "session/create")
+            .count(),
+        2,
+        "首轮与恢复失败应各新建一次会话：{methods:?}"
+    );
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| **method == "session/resume")
+            .count(),
+        2,
+        "后两轮应各尝试一次恢复：{methods:?}"
     );
 }
 

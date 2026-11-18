@@ -381,6 +381,141 @@ async fn persona_is_delivered_once_through_system_prompt() {
 }
 
 #[tokio::test]
+async fn persona_change_marks_system_prompt_undelivered() {
+    let (factory, inputs) = flow_factory(vec![
+        RunEvent::Session("sess-persona".to_string()),
+        RunEvent::TextDelta("ok".to_string()),
+        RunEvent::Final("ok".to_string()),
+    ]);
+    let app = setup_with_adapter(Some(factory)).await;
+    let agent = create_agent(&app, "管家").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "书房", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+    enable_reuse(&app, room_id, agent_id).await;
+
+    post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages"),
+        json!({ "content": "@管家 第一问" }),
+    )
+    .await;
+    wait_for_runs(&app, room_id, 1).await;
+    post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages"),
+        json!({ "content": "@管家 第二问" }),
+    )
+    .await;
+    wait_for_runs(&app, room_id, 2).await;
+
+    let patched = patch(
+        &app,
+        &format!("/api/agents/{agent_id}"),
+        json!({ "persona": "新的人设" }),
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK, "{:?}", patched.body);
+
+    post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages"),
+        json!({ "content": "@管家 第三问" }),
+    )
+    .await;
+    wait_for_runs(&app, room_id, 3).await;
+
+    let captured = inputs.lock().unwrap();
+    assert_eq!(captured.len(), 3);
+    assert!(!captured[0].system_prompt_delivered);
+    assert!(captured[1].system_prompt_delivered);
+    assert!(
+        !captured[2].system_prompt_delivered,
+        "人设变化后必须重新投递"
+    );
+    assert_eq!(
+        captured[2].system_prompt.as_deref(),
+        Some("你是房间「书房」中的智能体「管家」。\n人设：新的人设")
+    );
+    assert!(!captured[2].prompt.contains("人设："));
+}
+
+#[tokio::test]
+async fn failed_run_does_not_mark_system_prompt_delivered() {
+    let inputs = Arc::new(Mutex::new(Vec::new()));
+    let captured = inputs.clone();
+    let calls = Arc::new(Mutex::new(0_usize));
+    let call_counter = calls.clone();
+    let factory: AdapterFactory = Arc::new(move |_agent: &Agent| {
+        let call = {
+            let mut counter = call_counter.lock().unwrap();
+            *counter += 1;
+            *counter
+        };
+        let events = if call == 1 {
+            vec![
+                RunEvent::Session("sess-fail".to_string()),
+                RunEvent::Error("boom".to_string()),
+            ]
+        } else {
+            vec![
+                RunEvent::Session("sess-fail".to_string()),
+                RunEvent::TextDelta("ok".to_string()),
+                RunEvent::Final("ok".to_string()),
+            ]
+        };
+        Ok(Arc::new(RecordingAdapter {
+            events,
+            inputs: captured.clone(),
+        }))
+    });
+    let app = setup_with_adapter(Some(factory)).await;
+    let agent = create_agent(&app, "失败成员").await;
+    let agent_id = agent["id"].as_i64().unwrap();
+    let room = create_room(&app, "失败房", &[agent_id]).await;
+    let room_id = room["id"].as_i64().unwrap();
+    enable_reuse(&app, room_id, agent_id).await;
+
+    post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages"),
+        json!({ "content": "@失败成员 第一问" }),
+    )
+    .await;
+    let runs = wait_for_runs(&app, room_id, 1).await;
+    assert!(
+        runs.iter().any(|run| run["status"] == "failed"),
+        "首轮应失败：{runs:?}"
+    );
+
+    post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages"),
+        json!({ "content": "@失败成员 第二问" }),
+    )
+    .await;
+    wait_for_runs(&app, room_id, 2).await;
+    post(
+        &app,
+        &format!("/api/rooms/{room_id}/messages"),
+        json!({ "content": "@失败成员 第三问" }),
+    )
+    .await;
+    wait_for_runs(&app, room_id, 3).await;
+
+    let captured = inputs.lock().unwrap();
+    assert_eq!(captured.len(), 3);
+    assert!(
+        !captured[1].system_prompt_delivered,
+        "失败运行不得写入 system prompt hash"
+    );
+    assert!(
+        captured[2].system_prompt_delivered,
+        "成功运行后下一轮应视为已投递"
+    );
+}
+
+#[tokio::test]
 async fn moderator_chat_uses_separate_system_prompt() {
     let (factory, inputs) = flow_factory(text_events("主持人回复"));
     let app = setup_with_adapter(Some(factory)).await;
