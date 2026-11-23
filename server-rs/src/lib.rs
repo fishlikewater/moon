@@ -208,7 +208,6 @@ impl AppState {
             tasks: task_store.clone(),
             broadcast: broadcast.clone(),
         }));
-        let task_scheduler = Arc::new(TaskScheduler::new(task_store.clone(), task_service.clone()));
         let collaboration_service = Arc::new(CollaborationService::new(
             room_store.clone(),
             collaboration_store.clone(),
@@ -226,6 +225,11 @@ impl AppState {
             task_service.clone(),
             broadcast.clone(),
             pause_control.clone(),
+        ));
+        let task_scheduler = Arc::new(TaskScheduler::new(
+            task_store.clone(),
+            task_service.clone(),
+            orchestrator.clone(),
         ));
         chat.set_orchestrator(Arc::downgrade(&orchestrator));
         let discussion_service = Arc::new(DiscussionService::new(

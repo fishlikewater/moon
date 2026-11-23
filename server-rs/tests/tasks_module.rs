@@ -39,6 +39,27 @@ async fn event_types(app: &common::TestApp, task_id: i64) -> Vec<String> {
     .unwrap()
 }
 
+/// 等待定时任务产生编排运行；修复前调度器只改状态，不会出现任务关联运行。
+async fn wait_for_task_run(app: &common::TestApp, task_id: i64) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_runs WHERE task_id = ?")
+                .bind(task_id)
+                .fetch_one(app.state.db.pool())
+                .await
+                .unwrap();
+        if count > 0 {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "定时启动后 10s 内未产生编排运行"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn task_fields_roundtrip_and_validation() {
     let app = setup().await;
@@ -255,6 +276,8 @@ async fn scheduler_starts_due_tasks_once() {
     assert_eq!(report.started, vec![task_id]);
     assert!(report.failed.is_empty());
 
+    // tick 内已同步完成激活：不依赖编排异步进度，只要求离开 backlog；
+    // 后台编排若快速失败熔断，in_progress → blocked 是合法流转。
     let started = get(&app, &format!("/api/rooms/{room_id}/tasks")).await;
     let by_id = |id: i64| {
         started
@@ -266,7 +289,10 @@ async fn scheduler_starts_due_tasks_once() {
             .cloned()
             .unwrap()
     };
-    assert_eq!(by_id(task_id)["status"], "in_progress");
+    assert_ne!(
+        by_id(task_id)["status"], "backlog",
+        "定时任务必须离开 backlog"
+    );
     assert_eq!(by_id(future_id)["status"], "backlog");
     assert_eq!(by_id(plain_id)["status"], "backlog");
     assert!(
@@ -274,9 +300,14 @@ async fn scheduler_starts_due_tasks_once() {
         "启动成功后定时应清除，原时间记入 scheduled_started 事件"
     );
 
+    // 定时启动必须与手动「启动编排」一致：真正启动编排并产生任务关联运行。
+    wait_for_task_run(&app, task_id).await;
+
     let types = event_types(&app, task_id).await;
-    assert!(types.contains(&"status_changed".to_string()));
-    assert!(types.contains(&"scheduled_started".to_string()));
+    // 创建、激活与调度事件必须在启动编排之前同步写入，后续事件只可能追加在其后。
+    assert_eq!(types.first().map(String::as_str), Some("created"));
+    assert_eq!(types.get(1).map(String::as_str), Some("status_changed"));
+    assert_eq!(types.get(2).map(String::as_str), Some("scheduled_started"));
 
     let second = app.state.task_scheduler.tick(now_ms()).await.unwrap();
     assert!(second.started.is_empty(), "已启动任务不得重复启动");

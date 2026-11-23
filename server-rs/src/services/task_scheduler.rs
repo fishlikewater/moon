@@ -1,7 +1,8 @@
 //! 任务定时调度器：扫描到期任务并自动启动。
 //!
 //! 启动必须走 `TaskService::activate`，保证状态机校验、`status_changed` 事件与
-//! WS 广播与手工启动一致；调度器只负责发现「到期」与记录调度结果。
+//! WS 广播与手工启动一致；调度器负责发现「到期」、激活并启动编排，
+//! 执行本身仍由 `OrchestratorEngine` 负责。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,6 +12,7 @@ use serde_json::{json, Map};
 use crate::domain::now_ms;
 use crate::domain::task::TaskStatus;
 use crate::error::{AppError, AppResult, ErrorCode};
+use crate::services::orchestrator::OrchestratorEngine;
 use crate::services::tasks::TaskService;
 use crate::store::TaskStore;
 
@@ -24,11 +26,20 @@ pub struct TickReport {
 pub struct TaskScheduler {
     tasks: TaskStore,
     service: Arc<TaskService>,
+    orchestrator: Arc<OrchestratorEngine>,
 }
 
 impl TaskScheduler {
-    pub fn new(tasks: TaskStore, service: Arc<TaskService>) -> Self {
-        Self { tasks, service }
+    pub fn new(
+        tasks: TaskStore,
+        service: Arc<TaskService>,
+        orchestrator: Arc<OrchestratorEngine>,
+    ) -> Self {
+        Self {
+            tasks,
+            service,
+            orchestrator,
+        }
     }
 
     /// 扫描并启动到期任务。幂等：同一到期快照被并发处理时只有真正完成
@@ -52,6 +63,9 @@ impl TaskScheduler {
                     self.tasks
                         .append_event(started.id, "scheduled_started", Some(&payload))
                         .await?;
+                    // 与手动「启动编排」一致：激活成功后必须启动编排引擎，
+                    // 否则任务会停在 in_progress 而没有任何运行。
+                    self.orchestrator.start(started.id);
                     report.started.push(started.id);
                 }
                 Err(error) if is_permanent_schedule_failure(&error) => {
