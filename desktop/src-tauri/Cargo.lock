@@ -2322,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "moon-desktop"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "axum",
  "moon-server",
@@ -2340,7 +2340,7 @@ dependencies = [
 
 [[package]]
 name = "moon-server"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "agent-client-protocol",
  "axum",
