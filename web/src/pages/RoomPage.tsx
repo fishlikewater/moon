@@ -63,6 +63,11 @@ import {
   splitMentions,
   summarizeReply,
 } from "../components/messageInteractions";
+import { ContextMenu, useContextMenu } from "../components/ContextMenu";
+import {
+  buildMessageLink,
+  buildMessageMenuItems,
+} from "../components/messageContextMenu";
 import SessionPanel from "../components/SessionPanel";
 import { buildRoomChrome, useRoomChrome } from "../components/layout/roomChrome";
 import {
@@ -350,9 +355,11 @@ interface MessageCardProps {
   onInspectRun: (runId: number) => void;
   onReply: (message: Message) => void;
   onCopy: (message: Message) => void;
+  onCopyLink: (message: Message) => void;
   onToggleReaction: (messageId: number, emoji: string) => void;
   onJumpToMessage: (messageId: number) => void;
   copied: boolean;
+  copiedLink: boolean;
   reactionBusy: boolean;
   flash: boolean;
   onLayoutChange: () => void;
@@ -431,7 +438,7 @@ function MessageAttachments({
   );
 }
 
-const MessageCard = memo(function MessageCard({
+export const MessageCard = memo(function MessageCard({
   message,
   name,
   isContinuation,
@@ -447,9 +454,11 @@ const MessageCard = memo(function MessageCard({
   onInspectRun,
   onReply,
   onCopy,
+  onCopyLink,
   onToggleReaction,
   onJumpToMessage,
   copied,
+  copiedLink,
   reactionBusy,
   flash,
   onLayoutChange,
@@ -459,6 +468,7 @@ const MessageCard = memo(function MessageCard({
   const [expanded, setExpanded] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerBelow, setPickerBelow] = useState(false);
+  const messageMenu = useContextMenu();
   const markdownShellRef = useRef<HTMLDivElement | null>(null);
   const pickerRef = useRef<HTMLDivElement | null>(null);
 
@@ -526,6 +536,22 @@ const MessageCard = memo(function MessageCard({
   const collaborationRoleText =
     collaborationRole === null ? null : collaborationRoleLabel(collaborationRole);
   const interactive = isInteractiveMessage(message);
+  const messageMenuItems = interactive
+    ? buildMessageMenuItems(
+        { canReply: true, canReact: true, runId },
+        {
+          onReply: () => onReply(message),
+          onCopy: () => onCopy(message),
+          onCopyLink: () => onCopyLink(message),
+          onToggleReaction: (emoji) => onToggleReaction(message.id, emoji),
+          onInspectRun: () => {
+            if (runId !== null) {
+              onInspectRun(runId);
+            }
+          },
+        },
+      )
+    : [];
   const reactions = message.reactions ?? [];
   const mentionSegments =
     message.senderType === "user" && message.kind === "reply"
@@ -548,6 +574,7 @@ const MessageCard = memo(function MessageCard({
   return (
     <article
       id={`message-${message.id}`}
+      aria-haspopup={interactive ? "menu" : undefined}
       className={`msg msg-${message.senderType} msg-${message.status}${moderatorMessageClass(
         message.senderType,
         isModerator,
@@ -558,6 +585,11 @@ const MessageCard = memo(function MessageCard({
       }${discussionKind === "judge" ? " is-judge" : ""}${
         collaborationRole === "summary" ? " is-collaboration-summary" : ""
       }${flash ? " is-flash" : ""}`}
+      onContextMenu={(event) => {
+        if (messageMenuItems.length > 0) {
+          messageMenu.openAt(event);
+        }
+      }}
     >
       {message.senderType === "user" &&
         (isContinuation ? (
@@ -670,6 +702,13 @@ const MessageCard = memo(function MessageCard({
                 onClick={() => onCopy(message)}
               >
                 {copied ? "已复制" : "复制"}
+              </button>
+              <button
+                type="button"
+                className="msg-action"
+                onClick={() => onCopyLink(message)}
+              >
+                {copiedLink ? "已复制链接" : "链接"}
               </button>
               <div className="msg-action-picker" ref={pickerRef}>
                 <button
@@ -814,6 +853,15 @@ const MessageCard = memo(function MessageCard({
           </div>
         )}
       </div>
+      {messageMenu.open && (
+        <ContextMenu
+          open
+          position={messageMenu.position}
+          items={messageMenuItems}
+          onClose={messageMenu.close}
+          ariaLabel="消息操作"
+        />
+      )}
     </article>
   );
 });
@@ -915,6 +963,9 @@ export default function RoomPage() {
   const [sideTab, setSideTab] = useState<RoomSideTab>(() => readRoomSideTab());
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
+  const [copiedLinkMessageId, setCopiedLinkMessageId] = useState<number | null>(
+    null,
+  );
   const [reactionBusyId, setReactionBusyId] = useState<number | null>(null);
   const [flashMessageId, setFlashMessageId] = useState<number | null>(null);
   const [messageNotice, setMessageNotice] = useState<string | null>(null);
@@ -1016,6 +1067,14 @@ export default function RoomPage() {
     const timer = window.setTimeout(() => setCopiedMessageId(null), 1500);
     return () => window.clearTimeout(timer);
   }, [copiedMessageId]);
+
+  useEffect(() => {
+    if (copiedLinkMessageId === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopiedLinkMessageId(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copiedLinkMessageId]);
 
   useEffect(() => {
     if (flashMessageId === null) {
@@ -1633,6 +1692,22 @@ export default function RoomPage() {
     }
   }, []);
 
+  const copyMessageLink = useCallback(async (message: Message) => {
+    try {
+      await navigator.clipboard.writeText(
+        buildMessageLink(
+          window.location.origin,
+          window.location.pathname,
+          message.id,
+        ),
+      );
+      setCopiedLinkMessageId(message.id);
+      setMessageNotice(null);
+    } catch {
+      setMessageNotice("复制链接失败，请检查剪贴板权限");
+    }
+  }, []);
+
   const toggleReaction = useCallback(
     async (messageId: number, emoji: string) => {
       if (roomId === null || reactionBusyRef.current !== null) {
@@ -2103,9 +2178,11 @@ export default function RoomPage() {
                       onInspectRun={openRunPage}
                       onReply={startReply}
                       onCopy={copyMessage}
+                      onCopyLink={copyMessageLink}
                       onToggleReaction={toggleReaction}
                       onJumpToMessage={jumpToMessage}
                       copied={copiedMessageId === message.id}
+                      copiedLink={copiedLinkMessageId === message.id}
                       reactionBusy={reactionBusyId === message.id}
                       flash={flashMessageId === message.id}
                       onLayoutChange={handleMessageLayoutChange}

@@ -1,5 +1,13 @@
+// @vitest-environment jsdom
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Message, Room } from "@moon/shared";
 import {
   canSendDirectMessage,
@@ -152,6 +160,130 @@ describe("DirectMessage", () => {
     const html = renderMessage({ status: "failed", content: "运行失败" });
 
     expect(html).toMatch(/status-pill blocked[^>]*>失败</);
+  });
+
+  it("消息操作区提供复制与链接入口", () => {
+    const html = renderMessage({ content: "可复制内容" }, 7);
+
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain(">复制<");
+    expect(html).toContain(">链接<");
+    expect(html).toContain("运行详情");
+  });
+});
+
+describe("DirectMessage 复制操作", () => {
+  const originalClipboard = Object.getOwnPropertyDescriptor(
+    navigator,
+    "clipboard",
+  );
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    if (originalClipboard === undefined) {
+      Reflect.deleteProperty(navigator, "clipboard");
+    } else {
+      Object.defineProperty(navigator, "clipboard", originalClipboard);
+    }
+    window.history.replaceState({}, "", "/");
+  });
+
+  function installClipboard(writeText: (text: string) => Promise<void>): void {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+  }
+
+  function renderInteractive(): void {
+    render(
+      <DirectMessage
+        message={message({ id: 43, content: "直聊复制内容" })}
+        agent={AGENT}
+        runId={null}
+        onInspectRun={() => {}}
+        onLayoutChange={() => {}}
+      />,
+    );
+  }
+
+  it("点击链接把当前消息 URL 写入剪贴板并反馈", async () => {
+    window.history.replaceState({}, "", "/chat/room/20");
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
+    installClipboard(writeText);
+    renderInteractive();
+
+    fireEvent.click(screen.getByRole("button", { name: "链接" }));
+
+    expect(await screen.findByRole("button", { name: "已复制链接" })).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith(
+      "http://localhost:3000/chat/room/20#message-43",
+    );
+  });
+
+  it("点击复制写入消息正文", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
+    installClipboard(writeText);
+    renderInteractive();
+
+    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+
+    expect(await screen.findByRole("button", { name: "已复制" })).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith("直聊复制内容");
+  });
+
+  it("剪贴板失败时按钮反馈失败", async () => {
+    const writeText = vi
+      .fn<(text: string) => Promise<void>>()
+      .mockRejectedValue(new Error("denied"));
+    installClipboard(writeText);
+    renderInteractive();
+
+    fireEvent.click(screen.getByRole("button", { name: "链接" }));
+
+    expect(await screen.findByRole("button", { name: "链接失败" })).toBeTruthy();
+  });
+
+  it("反馈 1.5 秒后恢复，卸载后计时器不再触发", async () => {
+    vi.useFakeTimers();
+    try {
+      const writeText = vi
+        .fn<(text: string) => Promise<void>>()
+        .mockResolvedValue();
+      installClipboard(writeText);
+      const view = render(
+        <DirectMessage
+          message={message({ id: 44, content: "计时反馈" })}
+          agent={AGENT}
+          runId={null}
+          onInspectRun={() => {}}
+          onLayoutChange={() => {}}
+        />,
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "复制" }));
+      });
+      expect(screen.getByRole("button", { name: "已复制" })).toBeTruthy();
+
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      expect(screen.getByRole("button", { name: "复制" })).toBeTruthy();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "复制" }));
+      });
+      view.unmount();
+      expect(() => {
+        act(() => {
+          vi.advanceTimersByTime(2000);
+        });
+      }).not.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

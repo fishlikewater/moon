@@ -23,6 +23,11 @@ import {
   isImageAttachment,
 } from "../components/attachmentView";
 import { composerKeyAction } from "../components/composerKeys";
+import { ContextMenu, useContextMenu } from "../components/ContextMenu";
+import {
+  buildMessageLink,
+  buildMessageMenuItems,
+} from "../components/messageContextMenu";
 import { useRoomChrome } from "../components/layout/roomChrome";
 import SessionPanel from "../components/SessionPanel";
 import { useRoomChat } from "../hooks/useRoomChat";
@@ -270,12 +275,81 @@ export const DirectMessage = memo(function DirectMessage({
 }: DirectMessageProps) {
   const isUser = message.senderType === "user";
   const isProgress = message.kind === "progress";
+  const [copyFeedback, setCopyFeedback] = useState<{
+    kind: "text" | "link";
+    status: "done" | "failed";
+  } | null>(null);
+  const messageMenu = useContextMenu();
+
+  useEffect(() => {
+    if (copyFeedback === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopyFeedback(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copyFeedback]);
+
+  const copyText = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopyFeedback({ kind: "text", status: "done" });
+    } catch {
+      setCopyFeedback({ kind: "text", status: "failed" });
+    }
+  };
+
+  const copyLink = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(
+        buildMessageLink(
+          window.location.origin,
+          window.location.pathname,
+          message.id,
+        ),
+      );
+      setCopyFeedback({ kind: "link", status: "done" });
+    } catch {
+      setCopyFeedback({ kind: "link", status: "failed" });
+    }
+  };
+
+  const actionLabel = (
+    kind: "text" | "link",
+    idle: string,
+    done: string,
+    failed: string,
+  ): string => {
+    if (copyFeedback?.kind !== kind) {
+      return idle;
+    }
+    return copyFeedback.status === "done" ? done : failed;
+  };
+
+  const messageMenuItems = buildMessageMenuItems(
+    { canReply: false, canReact: false, runId },
+    {
+      onReply: () => {},
+      onCopy: () => void copyText(),
+      onCopyLink: () => void copyLink(),
+      onToggleReaction: () => {},
+      onInspectRun: () => {
+        if (runId !== null) {
+          onInspectRun(runId);
+        }
+      },
+    },
+  );
+
   return (
     <article
       id={`message-${message.id}`}
+      aria-haspopup="menu"
       className={`msg msg-${message.senderType} msg-${message.status}${
         isProgress ? " is-progress" : ""
       }`}
+      onContextMenu={(event) => {
+        messageMenu.openAt(event);
+      }}
     >
       {isUser ? (
         <span className="avatar avatar-sm avatar-user" aria-hidden="true">
@@ -299,6 +373,22 @@ export const DirectMessage = memo(function DirectMessage({
           {message.status === "failed" && (
             <span className="status-pill blocked">失败</span>
           )}
+          <div className="msg-actions" role="group" aria-label="消息操作">
+            <button
+              type="button"
+              className="msg-action"
+              onClick={() => void copyText()}
+            >
+              {actionLabel("text", "复制", "已复制", "复制失败")}
+            </button>
+            <button
+              type="button"
+              className="msg-action"
+              onClick={() => void copyLink()}
+            >
+              {actionLabel("link", "链接", "已复制链接", "链接失败")}
+            </button>
+          </div>
         </header>
 
         {isProgress ? (
@@ -323,6 +413,15 @@ export const DirectMessage = memo(function DirectMessage({
           </div>
         )}
       </div>
+      {messageMenu.open && (
+        <ContextMenu
+          open
+          position={messageMenu.position}
+          items={messageMenuItems}
+          onClose={messageMenu.close}
+          ariaLabel="消息操作"
+        />
+      )}
     </article>
   );
 });
