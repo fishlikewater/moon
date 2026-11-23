@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import type { SessionOverview } from "@moon/shared";
 import { api, errorMessage } from "../api/client";
+import { ContextMenu, useContextMenu } from "../components/ContextMenu";
+import type { ContextMenuItem } from "../components/contextMenuCore";
 import { EmptyState } from "../components/layout/EmptyState";
 import { ListSkeleton } from "../components/layout/ListSkeleton";
 import { PageHeader } from "../components/layout/PageHeader";
@@ -30,6 +32,9 @@ const STATUS_OPTIONS: ReadonlyArray<{
  * 房间内既有接口，页面只负责刷新与错误提示。
  */
 export default function SessionsPage() {
+  const navigate = useNavigate();
+  const rowMenu = useContextMenu();
+  const [menuTarget, setMenuTarget] = useState<SessionOverview | null>(null);
   const [sessions, setSessions] = useState<SessionOverview[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +102,46 @@ export default function SessionsPage() {
     } finally {
       setPendingId(null);
     }
+  };
+
+  const rowMenuItems = (session: SessionOverview): ContextMenuItem[] => {
+    const pending = pendingId === session.id;
+    const runPath = sessionRunPath(session);
+    const items: ContextMenuItem[] = [
+      {
+        kind: "item",
+        id: "open-room",
+        label: "打开房间",
+        onSelect: () => navigate(`/rooms/${session.roomId}`),
+      },
+    ];
+    if (runPath !== null) {
+      items.push({
+        kind: "item",
+        id: "open-run",
+        label: "打开最近运行",
+        onSelect: () => navigate(runPath),
+      });
+    }
+    items.push({ kind: "separator", id: "sep-actions" });
+    if (session.status === "active") {
+      items.push({
+        kind: "item",
+        id: "archive",
+        label: "归档",
+        disabled: pending,
+        onSelect: () => void archive(session),
+      });
+    }
+    items.push({
+      kind: "item",
+      id: "delete",
+      label: "删除",
+      danger: true,
+      disabled: pending,
+      onSelect: () => void remove(session),
+    });
+    return items;
   };
 
   return (
@@ -199,7 +244,15 @@ export default function SessionsPage() {
                 const runPath = sessionRunPath(session);
                 const pending = pendingId === session.id;
                 return (
-                  <tr key={session.id}>
+                  <tr
+                    key={session.id}
+                    aria-haspopup="menu"
+                    onContextMenu={(event) => {
+                      if (rowMenu.openAt(event)) {
+                        setMenuTarget(session);
+                      }
+                    }}
+                  >
                     <td>
                       <span className="session-table-id">#{session.id}</span>
                       <span className="session-harness">{session.harness}</span>
@@ -265,6 +318,15 @@ export default function SessionsPage() {
             </tbody>
           </table>
         </div>
+      )}
+      {rowMenu.open && menuTarget !== null && (
+        <ContextMenu
+          open
+          position={rowMenu.position}
+          items={rowMenuItems(menuTarget)}
+          onClose={rowMenu.close}
+          ariaLabel="会话操作"
+        />
       )}
     </div>
   );

@@ -5,7 +5,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type {
   Agent,
   Room,
@@ -14,6 +14,8 @@ import type {
 } from "@moon/shared";
 import { api, errorMessage, ROOM_DISCUSSION_ROUNDS } from "../api/client";
 import { AgentAvatar } from "../components/AgentAvatar";
+import { ContextMenu, useContextMenu } from "../components/ContextMenu";
+import type { ContextMenuItem } from "../components/contextMenuCore";
 import { EmptyState } from "../components/layout/EmptyState";
 import { ListSkeleton } from "../components/layout/ListSkeleton";
 import { PageHeader } from "../components/layout/PageHeader";
@@ -110,6 +112,9 @@ function mergeWorkspaceDirs(current: string[], next: string[]): string[] {
  * 成员增删与回复模式变更走独立接口并立即回读服务端结果。
  */
 export default function RoomsPage() {
+  const navigate = useNavigate();
+  const roomMenu = useContextMenu();
+  const [menuTarget, setMenuTarget] = useState<Room | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -423,6 +428,30 @@ export default function RoomsPage() {
     }
   };
 
+  const roomMenuItems = (room: Room): ContextMenuItem[] => [
+    {
+      kind: "item",
+      id: "open-room",
+      label: "进入房间",
+      onSelect: () => navigate(`/rooms/${room.id}`),
+    },
+    {
+      kind: "item",
+      id: "edit",
+      label: "编辑",
+      onSelect: () => startEdit(room),
+    },
+    { kind: "separator", id: "sep-actions" },
+    {
+      kind: "item",
+      id: "delete",
+      label: "删除",
+      danger: true,
+      disabled: deletingRoomId !== null,
+      onSelect: () => void removeRoom(room),
+    },
+  ];
+
   // 房间数量有限，每次渲染直接过滤排序即可；搜索/排序组合保持纯函数可测。
   const orderedPage = visibleRooms(rooms, roomQuery, roomSort);
 
@@ -538,7 +567,16 @@ export default function RoomsPage() {
                         ? "暂无消息"
                         : new Date(room.lastActivityAt).toLocaleString("zh-CN");
                     return (
-                      <li key={room.id} className="room-row">
+                      <li
+                        key={room.id}
+                        className="room-row"
+                        aria-haspopup="menu"
+                        onContextMenu={(event) => {
+                          if (roomMenu.openAt(event)) {
+                            setMenuTarget(room);
+                          }
+                        }}
+                      >
                         <div className="room-row-main">
                           <div className="room-identity">
                             <h3 className="room-title">{room.name}</h3>
@@ -867,6 +905,15 @@ export default function RoomsPage() {
             </form>
           </div>
         </div>
+      )}
+      {roomMenu.open && menuTarget !== null && (
+        <ContextMenu
+          open
+          position={roomMenu.position}
+          items={roomMenuItems(menuTarget)}
+          onClose={roomMenu.close}
+          ariaLabel="房间操作"
+        />
       )}
     </section>
   );

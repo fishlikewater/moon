@@ -9,6 +9,8 @@ import {
 import { Link, useSearchParams } from "react-router-dom";
 import type { Agent, Room, Task, TaskPriority, TaskStatus } from "@moon/shared";
 import { api, errorMessage } from "../api/client";
+import { ContextMenu, useContextMenu } from "../components/ContextMenu";
+import type { ContextMenuItem } from "../components/contextMenuCore";
 import { EmptyState } from "../components/layout/EmptyState";
 import { shouldOpenNew, withoutNewParam } from "./newEntry";
 import { ListSkeleton } from "../components/layout/ListSkeleton";
@@ -70,6 +72,8 @@ function formatTime(ms: number): string {
  * 合并、按更新时间排序；房间筛选在本地完成，不额外请求。
  */
 export default function TasksPage() {
+  const taskMenu = useContextMenu();
+  const [menuTarget, setMenuTarget] = useState<Task | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [roomFilter, setRoomFilter] = useState<number | null>(null);
@@ -348,6 +352,35 @@ export default function TasksPage() {
     }
   };
 
+  const taskMenuItems = (task: Task): ContextMenuItem[] => {
+    const busy = busyTaskId === task.id || activatingTaskId === task.id;
+    const items: ContextMenuItem[] = [
+      {
+        kind: "item",
+        id: "detail",
+        label: "详情",
+        onSelect: () => setSelectedTaskId(task.id),
+      },
+      {
+        kind: "item",
+        id: "edit",
+        label: "编辑",
+        onSelect: () => openEdit(task),
+      },
+    ];
+    if (canActivateTask(task)) {
+      items.push({ kind: "separator", id: "sep-actions" });
+      items.push({
+        kind: "item",
+        id: "activate",
+        label: "启动编排",
+        disabled: busy,
+        onSelect: () => void activate(task),
+      });
+    }
+    return items;
+  };
+
   const togglePause = async () => {
     if (roomFilter === null || pausing) {
       return;
@@ -590,7 +623,16 @@ export default function TasksPage() {
                     Date.now(),
                   );
                   return (
-                    <article key={task.id} className="task-card">
+                    <article
+                      key={task.id}
+                      className="task-card"
+                      aria-haspopup="menu"
+                      onContextMenu={(event) => {
+                        if (taskMenu.openAt(event)) {
+                          setMenuTarget(task);
+                        }
+                      }}
+                    >
                       <button
                         type="button"
                         className="task-card-title"
@@ -681,7 +723,15 @@ export default function TasksPage() {
                   task.status !== "cancelled";
                 const schedule = formatSchedule(task.scheduledAt, Date.now());
                 return (
-                  <tr key={task.id}>
+                  <tr
+                    key={task.id}
+                    aria-haspopup="menu"
+                    onContextMenu={(event) => {
+                      if (taskMenu.openAt(event)) {
+                        setMenuTarget(task);
+                      }
+                    }}
+                  >
                     <td>
                       <div className="task-cell-main">
                         <div className="task-cell-title">
@@ -962,6 +1012,15 @@ export default function TasksPage() {
             </form>
           </div>
         </div>
+      )}
+      {taskMenu.open && menuTarget !== null && (
+        <ContextMenu
+          open
+          position={taskMenu.position}
+          items={taskMenuItems(menuTarget)}
+          onClose={taskMenu.close}
+          ariaLabel="任务操作"
+        />
       )}
     </section>
   );

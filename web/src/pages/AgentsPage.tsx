@@ -6,7 +6,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type {
   Agent,
   ApiProvider,
@@ -27,6 +27,8 @@ import {
   resolveProviderOptions,
 } from "../components/agentFormProvider";
 import { AcpFormGuide } from "../components/AcpFormGuide";
+import { ContextMenu, useContextMenu } from "../components/ContextMenu";
+import type { ContextMenuItem } from "../components/contextMenuCore";
 import {
   FIRST_PROBE_TIMEOUT_SECS,
   resolveAcpAvailability,
@@ -148,6 +150,12 @@ function SparkIcon() {
 
 /** 智能体管理页：列表 + 创建/编辑/删除闭环，加载、空态、错误态齐备。 */
 export default function AgentsPage() {
+  const navigate = useNavigate();
+  const agentMenu = useContextMenu();
+  const [menuTarget, setMenuTarget] = useState<{
+    agent: Agent;
+    builtin: boolean;
+  } | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -883,6 +891,37 @@ export default function AgentsPage() {
     }
   };
 
+  const agentMenuItems = (
+    agent: Agent,
+    builtin: boolean,
+  ): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = [
+      {
+        kind: "item",
+        id: "chat",
+        label: "开始对话",
+        onSelect: () => navigate(`/chat/${agent.id}`),
+      },
+      {
+        kind: "item",
+        id: "edit",
+        label: "编辑",
+        onSelect: () => startEdit(agent),
+      },
+    ];
+    if (!builtin) {
+      items.push({ kind: "separator", id: "sep-actions" });
+      items.push({
+        kind: "item",
+        id: "delete",
+        label: "删除",
+        danger: true,
+        onSelect: () => void remove(agent),
+      });
+    }
+    return items;
+  };
+
   return (
     <section className="page">
       <PageHeader
@@ -957,6 +996,12 @@ export default function AgentsPage() {
                 return (
                 <li
                   key={agent.id}
+                  aria-haspopup="menu"
+                  onContextMenu={(event) => {
+                    if (agentMenu.openAt(event)) {
+                      setMenuTarget({ agent, builtin: isBuiltin });
+                    }
+                  }}
                   className={
                     form.editingId === agent.id
                       ? `agent-card is-editing${isBuiltin ? " is-builtin" : ""}`
@@ -1425,6 +1470,15 @@ export default function AgentsPage() {
             </div>
           </div>
         </div>
+      )}
+      {agentMenu.open && menuTarget !== null && (
+        <ContextMenu
+          open
+          position={agentMenu.position}
+          items={agentMenuItems(menuTarget.agent, menuTarget.builtin)}
+          onClose={agentMenu.close}
+          ariaLabel="智能体操作"
+        />
       )}
     </section>
   );
