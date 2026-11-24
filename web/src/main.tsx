@@ -1,7 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { installContextMenuGuard } from "./contextMenuGuard";
 import "./styles.css";
+
+installContextMenuGuard();
 
 const container = document.getElementById("root");
 
